@@ -54,7 +54,12 @@ See [classification rules](docs/assignment-classification.md) and
 ## Installation and configuration
 
 For the complete setup, credential examples, BotFather/ID configuration, first-run
-checks and optional systemd/cron activation, follow [INSTALL.md](INSTALL.md) (Portuguese).
+checks and optional systemd/cron activation, follow [INSTALL.md](INSTALL.md) (English).
+It is also available in [Português do Brasil](INSTALL.pt-BR.md) and
+[Deutsch](INSTALL.de.md).
+
+The guide deploys to `/opt/ilias` (`venv/`, `check/`, `data/`). The shorter examples
+below use `$HOME` paths for a local development setup.
 
 Use Python **3.11+** on Linux. The private cache and monitoring state use POSIX file
 permissions/locks and Linux directory-descriptor paths.

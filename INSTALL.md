@@ -1,126 +1,141 @@
-# Instalação e configuração do ILIAS-Check com Telegram
+# Installing and configuring ILIAS-Check with Telegram
 
-Este guia acompanha a instalação do começo ao fim em Linux: preparar o Python,
-configurar o acesso ao ILIAS, criar um bot, preencher as credenciais, testar e
-manter o worker e o monitor funcionando.
+**English** | [Português do Brasil](INSTALL.pt-BR.md) | [Deutsch](INSTALL.de.md)
 
-**Os exemplos não contêm credenciais reais.** Substitua todos os campos indicados
-antes de iniciar. A criação deste guia não executa serviços, altera o cron nem
-envia mensagens. As etapas de ativação abaixo são ações que você executará
-quando estiver pronto para permitir os acessos e envios descritos.
+This guide covers a complete Linux installation: preparing Python, configuring
+ILIAS access, creating a bot, filling in credentials, testing, and keeping the
+worker and monitor running.
 
-## 1. Entenda os dois processos
+**The examples contain no real credentials.** Replace every indicated value before
+starting. Creating this guide does not run services, change cron, or send messages.
+The activation steps below are actions you perform when you are ready to allow the
+described access and sends.
 
-| Processo | O que faz | Quando executa |
+## 1. Understand the two processes
+
+| Process | What it does | When it runs |
 | --- | --- | --- |
-| `ilias-check bot` | Recebe comandos no chat privado e consulta as observações salvas. Um pedido de material pode iniciar uma nova verificação no ILIAS. | Continuamente, como worker. |
-| `ilias-check monitor` | Verifica o ILIAS, atualiza o estado e envia notificações habilitadas. | Uma vez por chamada; o cron pode executar a cada 12 horas. |
+| `ilias-check bot` | Receives commands in the private chat and queries stored observations. A material request can start a fresh ILIAS check. | Continuously, as a worker. |
+| `ilias-check monitor` | Checks ILIAS, updates state and sends enabled notifications. | Once per invocation; cron can run it every 12 hours. |
 
-**Iniciar somente o worker não cria um agendamento de coleta.** Os dois processos
-devem usar a mesma conta Linux, o mesmo arquivo de configuração e os mesmos
-diretórios de estado/cache. Não execute dois workers para o mesmo bot.
+**Starting only the worker does not create a collection schedule.** Both processes
+must use the same Linux account, the same configuration file and the same
+state/cache directories. Do not run two workers for the same bot.
 
-Pré-requisitos:
+Prerequisites:
 
-- Linux com Python **3.11 ou superior**, `venv`, `pip` e Git.
-- Acesso HTTPS ao ILIAS e a `api.telegram.org`; não é necessário abrir uma porta
-  pública nem configurar um webhook.
-- Conta ILIAS autorizada e compatível com o login por usuário/senha implementado.
-  A compatibilidade inicial é com ILIAS 9.23; SSO/MFA e outros layouts podem
-  exigir adaptação.
-- Conta pessoal do Telegram. Este software trabalha com **chat privado** e um
-  único usuário autorizado, não com grupos ou canais.
-- Para execução contínua, uma máquina que permaneça ligada. O serviço opcional
-  deste guia usa systemd de usuário; o agendamento usa cron.
+- Linux with Python **3.11 or newer**, `venv`, `pip` and Git.
+- HTTPS access to ILIAS and to `api.telegram.org`; no public port or webhook is
+  required.
+- An authorized ILIAS account compatible with the implemented username/password
+  login. Initial compatibility is with ILIAS 9.23; SSO/MFA and other layouts may
+  require adaptation.
+- A personal Telegram account. This software works with a **private chat** and a
+  single authorized user, not with groups or channels.
+- For continuous operation, a machine that stays powered on. The optional service
+  in this guide uses user-level systemd; scheduling uses cron.
 
-Nos exemplos, o código fica em `~/apps/ILIAS-Check`. A configuração e os dados
-ficam fora do repositório, em `~/.config/ilias-check` e `~/.local/share/ilias-check`.
-Se escolher outro local para o código, ajuste também o serviço e o cron.
+The installation uses this layout:
 
-## 2. Baixe e instale o software
+```text
+/opt/ilias/
+├── venv/   # Python virtual environment and executables
+├── check/  # software checkout (main branch)
+└── data/   # private configuration and runtime data
+    ├── ilias.env
+    ├── inventory.json
+    ├── monitor/     # SQLite state
+    ├── support/     # downloaded documents and manifest
+    └── monitor.log
+```
 
-Confira o Python:
+Data files are created in the corresponding steps. `data` stays outside the
+`check` checkout. Use the same ordinary Linux account throughout installation and
+operation; `sudo` is only needed to prepare `/opt/ilias` (and, optionally, linger).
+
+## 2. Download and install the software
+
+Check Python:
 
 ```sh
 python3 --version
 ```
 
-O resultado precisa ser 3.11 ou superior. Em Debian/Ubuntu, as ferramentas básicas
-podem ser instaladas com os pacotes `git`, `python3`, `python3-venv` e `python3-pip`;
-confira a versão de Python fornecida pela sua distribuição.
+The result must be 3.11 or newer. On Debian/Ubuntu, install `git`, `python3`,
+`python3-venv` and `python3-pip` if needed; check the version your distribution
+provides.
 
-No estado atual do projeto, a implementação do bot está na branch
-`feat/pending-assignment-classification`. Para uma instalação nova:
+For a **fresh installation**, prepare the directory for the current user. Run this
+in a session of that ordinary user, not in a root shell:
 
 ```sh
-mkdir -p "$HOME/apps"
-git clone --branch feat/pending-assignment-classification \
-  https://github.com/richmont/ILIAS-Check.git "$HOME/apps/ILIAS-Check"
-cd "$HOME/apps/ILIAS-Check"
-python3 -m venv .venv
-.venv/bin/python -m pip install -e '.[test]'
-.venv/bin/ilias-check --help
-.venv/bin/pytest -q
+sudo install -d -m 755 -o "$(id -un)" -g "$(id -gn)" /opt/ilias
+git clone --branch main \
+  https://github.com/richmont/ILIAS-Check.git /opt/ilias/check
+python3 -m venv /opt/ilias/venv
+cd /opt/ilias/check
+/opt/ilias/venv/bin/python -m pip install -e '.[test]'
+/opt/ilias/venv/bin/ilias-check --help
+/opt/ilias/venv/bin/pytest -q
 ```
 
-Se já possui este checkout, entre nele e use a instalação existente; não clone
-por cima dos seus arquivos. Uma futura versão ou merge pode mudar a branch de
-instalação. Use a branch/versão correspondente a este guia.
+The implementation is already integrated into `main`. If you already have an
+installation, keep your files and use the update section; do not clone over an
+existing checkout, and do not change the owner of another user's installation.
 
-O comando de ajuda deve listar `collect`, `classify`, `monitor` e `bot`. Os testes
-são offline e não exigem credenciais reais. Não é necessário ativar o venv no
-shell: os exemplos usam os executáveis de `.venv` diretamente.
+Help must list `collect`, `classify`, `monitor` and `bot`. The tests are offline and
+need no real credentials. You do not need to activate the venv in your shell: the
+examples call the executables in `/opt/ilias/venv` directly.
 
-## 3. Prepare os arquivos privados
+## 3. Prepare the private files
 
-Ainda na pasta do projeto:
+Still in the project directory:
 
 ```sh
 umask 077
-install -d -m 700 "$HOME/.config/ilias-check"
-install -d -m 700 "$HOME/.local/share/ilias-check"
-install -d -m 700 "$HOME/.local/share/ilias-check/monitor"
-install -d -m 700 "$HOME/.local/share/ilias-check/support"
+install -d -m 700 "/opt/ilias/data"
+install -d -m 700 "/opt/ilias/data/monitor"
+install -d -m 700 "/opt/ilias/data/support"
 ```
 
-Para a **primeira instalação**, copie o modelo inicial:
+For a **first installation**, copy the initial template:
 
 ```sh
 install -m 600 examples/config/ilias-local.env.example \
-  "$HOME/.config/ilias-check/ilias.env"
+  /opt/ilias/data/ilias.env
 ```
 
-Esse último comando substitui um arquivo existente. Se você já tem uma
-configuração, edite-a e compare os modelos; não execute a cópia por cima dela.
-Abra o arquivo no editor de sua preferência, por exemplo:
+That last command replaces an existing file. If you already have a configuration,
+edit it and compare the templates; do not copy over it. Open the file in your
+preferred editor, for example:
 
 ```sh
-nano "$HOME/.config/ilias-check/ilias.env"
+nano /opt/ilias/data/ilias.env
 ```
 
-Há dois modelos completos no repositório:
+There are two complete templates in the repository:
 
-- [ilias-local.env.example](examples/config/ilias-local.env.example): preparação e
-  coleta inicial, com Telegram desativado.
-- [ilias-telegram.env.example](examples/config/ilias-telegram.env.example): referência
-  para a etapa de ativação do Telegram, ainda sem anexos automáticos.
+- [ilias-local.env.example](examples/config/ilias-local.env.example): preparation and
+  first collection, with Telegram disabled.
+- [ilias-telegram.env.example](examples/config/ilias-telegram.env.example): reference
+  for the Telegram activation step, still without automatic attachments.
 
-Use **um único arquivo privado** `ilias.env` para a execução normal. Os modelos
-são alternativas completas, não arquivos a carregar em sequência. O parâmetro
-`--env-file` recebe somente um arquivo e não procura outros `.env` automaticamente.
-Variáveis já definidas no ambiente do processo prevalecem sobre o arquivo.
-Não use `source ilias.env`; o programa lê o formato dotenv diretamente.
+Use **one private file** `ilias.env` for normal operation. The templates are complete
+alternatives, not files to load in sequence. `--env-file` accepts a single file and
+does not search for other `.env` files automatically. Variables already defined in
+the process environment take precedence over the file. Do not use
+`source ilias.env`; the program reads the dotenv format directly.
 
-## 4. Configure o ILIAS antes de iniciar
+## 4. Configure ILIAS before starting
 
-Preencha esta parte do arquivo privado:
+Fill in this part of the private file:
 
 ```dotenv
-# Exemplo: troque a URL e todos os valores SUBSTITUA.
+# Example: replace the URL and every REPLACE value.
 ILIAS_BASE_URL=https://ilias.example.edu
-ILIAS_CLIENT_ID=SUBSTITUA_CLIENT_ID
-ILIAS_USER='SUBSTITUA_USUARIO_ILIAS'
-ILIAS_PASS='SUBSTITUA_SENHA_ILIAS'
+ILIAS_CLIENT_ID=REPLACE_CLIENT_ID
+ILIAS_USER='REPLACE_ILIAS_USERNAME'
+ILIAS_PASS='REPLACE_ILIAS_PASSWORD'
 ILIAS_PENDING_ROOTS=1001,1002
 ILIAS_TIMEZONE=Europe/Berlin
 
@@ -132,7 +147,7 @@ ILIAS_PENDING_ALTERNATIVE_SETS={}
 ILIAS_PENDING_INCLUDE_CONTEXTUAL=false
 
 ILIAS_PENDING_DOWNLOAD_SUPPORT=false
-ILIAS_PENDING_OUTPUT_DIR=~/.local/share/ilias-check/support
+ILIAS_PENDING_OUTPUT_DIR=/opt/ilias/data/support
 ILIAS_SUPPORT_MAX_FILE_BYTES=20971520
 ILIAS_SUPPORT_MAX_RUN_BYTES=104857600
 ILIAS_SUPPORT_REVALIDATE_HOURS=12
@@ -147,76 +162,76 @@ TELEGRAM_ALLOWED_USER_ID=
 ILIAS_TELEGRAM_SEND_DOCUMENTS=false
 ILIAS_TELEGRAM_MAX_DOCUMENT_BYTES=20971520
 ILIAS_TELEGRAM_MAX_MESSAGE_CHARS=4000
-ILIAS_MONITOR_STATE_DIR=~/.local/share/ilias-check/monitor
+ILIAS_MONITOR_STATE_DIR=/opt/ilias/data/monitor
 ILIAS_PENDING_REMINDER_HOURS=0
 ```
 
-| Campo | Como preencher |
+| Setting | How to fill it in |
 | --- | --- |
-| `ILIAS_BASE_URL` | URL HTTPS da instalação, incluindo o subdiretório se existir, sem `login.php`, query string ou token de sessão. Exemplo: `https://ilias.example.edu/ilias`. |
-| `ILIAS_CLIENT_ID` | Identificador da instalação; pode aparecer como `client_id` na URL de login. Não é seu usuário. Não o invente se estiver ausente: confirme com a instalação. |
-| `ILIAS_USER`, `ILIAS_PASS` | Usuário e senha autorizados do ILIAS. Aspas ajudam a preservar espaços e `#`; respeite a sintaxe dotenv ao usar aspas dentro do valor. |
-| `ILIAS_PENDING_ROOTS` | IDs reais das pastas/cursos a inspecionar. Em `goto.php?target=fold_1001`, a referência é `1001`; em uma URL com `ref_id=1002`, é `1002`. Os números acima são fictícios. |
-| `ILIAS_TIMEZONE` | Fuso da instalação. Para Bonn/Alemanha, use `Europe/Berlin`, incluindo as regras de horário de verão. Não depende do fuso do seu computador. |
+| `ILIAS_BASE_URL` | HTTPS URL of the installation, including the subdirectory if any, without `login.php`, query string or session token. Example: `https://ilias.example.edu/ilias`. |
+| `ILIAS_CLIENT_ID` | Installation identifier; it may appear as `client_id` in the login URL. It is not your username. Do not invent it if it is missing: confirm it with the installation. |
+| `ILIAS_USER`, `ILIAS_PASS` | Authorized ILIAS username and password. Quotes help preserve spaces and `#`; follow dotenv syntax when using quotes inside the value. |
+| `ILIAS_PENDING_ROOTS` | Real IDs of the folders/courses to inspect. In `goto.php?target=fold_1001`, the reference is `1001`; in a URL with `ref_id=1002`, it is `1002`. The numbers above are fictitious. |
+| `ILIAS_TIMEZONE` | Installation timezone. For Bonn/Germany use `Europe/Berlin`, including daylight-saving rules. It does not depend on your computer's timezone. |
 
-Mantenha os diretórios de estado e cache fora de qualquer checkout Git, sem
-componentes simbólicos, com proprietário correto e permissões privadas. A quota
-padrão do cache é **200 MB decimais**; o bot não pode alterá-la.
+Keep the state and cache directories outside any Git checkout, without symbolic
+components, with the correct owner and private permissions. The default cache quota
+is **200 MB decimal**; the bot cannot change it.
 
-Não cole senhas/tokens em comandos, issues ou prints. O arquivo de credenciais
-fica no host, não no Git. Confira a permissão sem mostrar seu conteúdo:
+Do not paste passwords/tokens into commands, issues, or screenshots. The credential
+file stays on the host, not in Git. Check the permission without showing its
+contents:
 
 ```sh
-chmod 600 "$HOME/.config/ilias-check/ilias.env"
-stat -c '%a %n' "$HOME/.config/ilias-check/ilias.env"
+chmod 600 /opt/ilias/data/ilias.env
+stat -c '%a %n' /opt/ilias/data/ilias.env
 ```
 
-O resultado deve começar com `600`.
+The result must start with `600`.
 
-## 5. Crie o bot no Telegram e guarde o token
+## 5. Create the Telegram bot and store the token
 
-1. Abra o [BotFather oficial](https://t.me/BotFather) no Telegram.
-2. Envie `/newbot`, escolha um nome e um username disponível terminado em `bot`.
-3. Copie o token fornecido pelo BotFather para `TELEGRAM_BOT_TOKEN` no seu arquivo
-   privado. Continue com `ILIAS_TELEGRAM_ENABLED=false`.
-4. Abra o chat privado do bot criado e envie `/start`. Neste ponto ainda não haverá
-   resposta: o worker não foi iniciado.
+1. Open the official [BotFather](https://t.me/BotFather) in Telegram.
+2. Send `/newbot`, choose a name and an available username ending in `bot`.
+3. Copy the token provided by BotFather into `TELEGRAM_BOT_TOKEN` in your private
+   file. Keep `ILIAS_TELEGRAM_ENABLED=false`.
+4. Open the new bot's private chat and send `/start`. There will be no reply yet:
+   the worker has not been started.
 
-Exemplo dos campos nessa etapa:
+Example of the fields at this stage:
 
 ```dotenv
 ILIAS_TELEGRAM_ENABLED=false
-TELEGRAM_BOT_TOKEN='SUBSTITUA_PELO_TOKEN_REAL_DO_BOTFATHER'
+TELEGRAM_BOT_TOKEN='REPLACE_WITH_REAL_BOTFATHER_TOKEN'
 TELEGRAM_CHAT_ID=
 TELEGRAM_ALLOWED_USER_ID=
 ILIAS_TELEGRAM_SEND_DOCUMENTS=false
 ```
 
-O procedimento de criação e gerenciamento está na
-[documentação oficial do BotFather](https://core.telegram.org/bots/features#botfather).
-O token é uma credencial, não o username público do bot. Se ele for exposto,
-revogue-o no BotFather, substitua o valor local e reinicie os processos envolvidos.
+The creation and management procedure is in the
+[official BotFather documentation](https://core.telegram.org/bots/features#botfather).
+The token is a credential, not the bot's public username. If it is exposed, revoke
+it in BotFather, replace the local value and restart the involved processes.
 
-## 6. Obtenha os IDs sem iniciar o worker
+## 6. Obtain the IDs without starting the worker
 
-Você precisa de dois IDs numéricos: o chat privado de destino e o usuário
-permitido. Use a API do seu próprio bot; não precisa fornecer seus dados a um
-bot de terceiros.
+You need two numeric IDs: the destination private chat and the allowed user. Use
+your own bot's API; you do not need to give your data to a third-party bot.
 
-Com o worker ainda **parado**, envie novamente `/start` no chat privado do bot.
-Execute este trecho na pasta do projeto. Ele lê o token do arquivo privado,
-não o coloca no histórico do shell e não imprime conteúdo de mensagens:
+With the worker still **stopped**, send `/start` again in the bot's private chat.
+Run this snippet in the project directory. It reads the token from the private file,
+keeps it out of shell history, and does not print message contents:
 
 ```sh
-.venv/bin/python - <<'PY'
+/opt/ilias/venv/bin/python - <<'PY'
 from pathlib import Path
 import requests
 from ilias_check.config import load_environment
 
-values = load_environment(Path.home() / '.config/ilias-check/ilias.env')
+values = load_environment(Path('/opt/ilias/data/ilias.env'))
 token = (values.get('TELEGRAM_BOT_TOKEN') or '').strip()
-if not token or 'SUBSTITUA' in token:
-    raise SystemExit('Preencha TELEGRAM_BOT_TOKEN no arquivo privado primeiro.')
+if not token or 'REPLACE' in token:
+    raise SystemExit('Fill in TELEGRAM_BOT_TOKEN in the private file first.')
 
 def api(method, payload):
     try:
@@ -227,13 +242,13 @@ def api(method, payload):
             status = response.status_code
             result = response.json()
     except Exception:
-        raise SystemExit('Falha ao consultar o Telegram; token e resposta foram omitidos.') from None
+        raise SystemExit('Telegram query failed; token and response were omitted.') from None
     if status != 200 or not isinstance(result, dict) or not result.get('ok'):
-        raise SystemExit(f'Telegram recusou a consulta (HTTP {status}). Confira token, webhook e outros workers.')
+        raise SystemExit(f'Telegram rejected the query (HTTP {status}). Check token, webhook and other workers.')
     return result['result']
 
 if api('getWebhookInfo', {}).get('url'):
-    raise SystemExit('Há um webhook ativo. Use um bot dedicado ou desative a integração anterior antes de continuar.')
+    raise SystemExit('A webhook is active. Use a dedicated bot or disable the previous integration before continuing.')
 updates = api('getUpdates', {'timeout': 0, 'limit': 100, 'allowed_updates': ['message']})
 seen = set()
 for update in updates:
@@ -249,198 +264,199 @@ for update in updates:
     print(f'TELEGRAM_CHAT_ID={pair[0]}')
     print(f'TELEGRAM_ALLOWED_USER_ID={pair[1]}')
 if not seen:
-    print('Nenhuma mensagem privada encontrada. Envie /start ao bot e tente novamente.')
+    print('No private message found. Send /start to the bot and try again.')
 PY
 ```
 
-Copie o par correspondente à **sua própria conversa** para o arquivo privado.
-Não use IDs de grupos/canais ou o ID do próprio bot. Se houver mais de um par,
-confirme qual é o seu antes de configurar o usuário autorizado.
+Copy the pair that belongs to **your own conversation** into the private file. Do not
+use group/channel IDs or the bot's own ID. If more than one pair appears, confirm
+which one is yours before configuring the allowed user.
 
-O script não envia mensagens e não avança o `offset` de recebimento. Não execute
-essa consulta enquanto outro consumidor estiver usando `getUpdates`. Webhooks e
-long polling são alternativas; para um bot reutilizado, migre a integração anterior
-conscientemente antes de usar este worker. Referências:
-[getUpdates](https://core.telegram.org/bots/api#getupdates) e
+The script sends no messages and does not advance the receive `offset`. Do not run
+this query while another consumer is using `getUpdates`. Webhooks and long polling
+are alternatives; for a reused bot, migrate the previous integration deliberately
+before using this worker. References:
+[getUpdates](https://core.telegram.org/bots/api#getupdates) and
 [getWebhookInfo](https://core.telegram.org/bots/api#getwebhookinfo).
 
-## 7. Teste a coleta e grave a primeira observação, sem Telegram
+## 7. Test collection and record the first observation, without Telegram
 
-Confirme que `ILIAS_TELEGRAM_ENABLED=false` e que os campos do ILIAS estão corretos.
-Os comandos desta etapa acessam o ILIAS; nenhum deles deve enviar mensagens ao Telegram.
+Confirm that `ILIAS_TELEGRAM_ENABLED=false` and that the ILIAS fields are correct.
+The commands in this step access ILIAS; none of them should send Telegram messages.
 
-Primeiro, salve um inventário privado:
+First, save a private inventory:
 
 ```sh
-cd "$HOME/apps/ILIAS-Check"
+cd /opt/ilias/check
 umask 077
-.venv/bin/ilias-check collect \
-  --env-file "$HOME/.config/ilias-check/ilias.env" \
-  > "$HOME/.local/share/ilias-check/inventory.json"
+/opt/ilias/venv/bin/ilias-check collect \
+  --env-file /opt/ilias/data/ilias.env \
+  > "/opt/ilias/data/inventory.json"
 ```
 
-Depois, consulte os casos inconclusivos localmente:
+Then inspect inconclusive cases locally:
 
 ```sh
-.venv/bin/ilias-check classify \
-  --env-file "$HOME/.config/ilias-check/ilias.env" \
-  --input "$HOME/.local/share/ilias-check/inventory.json" \
+/opt/ilias/venv/bin/ilias-check classify \
+  --env-file /opt/ilias/data/ilias.env \
+  --input "/opt/ilias/data/inventory.json" \
   --select needs-verification
 ```
 
-O código de saída `2` indica resultado parcial e pode ser esperado para páginas
-não resolvidas. Não significa necessariamente falha de login. Corrija erros fatais
-antes de prosseguir; mantenha incertezas como incertezas.
+Exit code `2` means a partial result and can be expected for unresolved pages. It
+does not necessarily mean login failure. Fix fatal errors before continuing; keep
+uncertainties as uncertainties.
 
-Agora execute o monitor **com Telegram ainda desativado**, para gravar observações
-no SQLite compartilhado com o worker:
+Now run the monitor **with Telegram still disabled**, to record observations in the
+SQLite state shared with the worker:
 
 ```sh
-.venv/bin/ilias-check monitor \
-  --env-file "$HOME/.config/ilias-check/ilias.env"
+/opt/ilias/venv/bin/ilias-check monitor \
+  --env-file /opt/ilias/data/ilias.env
 ```
 
-Isso pode deixar alertas na fila, mas não os envia enquanto o Telegram estiver
-desativado. **`collect` sozinho não alimenta o histórico do bot, e `monitor --dry-run`
-não grava essas observações.** Não pule a primeira execução normal do monitor.
+This may queue alerts, but it does not send them while Telegram is disabled.
+**`collect` alone does not feed the bot's history, and `monitor --dry-run` does not
+record those observations.** Do not skip the first normal monitor run.
 
-## 8. Habilite o Telegram e valide a configuração antes de iniciar
+## 8. Enable Telegram and validate the configuration before starting
 
-No **mesmo arquivo privado**, substitua os campos existentes; não acrescente
-linhas duplicadas nem sobrescreva suas credenciais do ILIAS com placeholders:
+In the **same private file**, replace the existing fields; do not add duplicate
+lines or overwrite your ILIAS credentials with placeholders:
 
 ```dotenv
 ILIAS_TELEGRAM_ENABLED=true
-TELEGRAM_BOT_TOKEN='SUBSTITUA_PELO_TOKEN_REAL_DO_BOTFATHER'
-TELEGRAM_CHAT_ID=SUBSTITUA_CHAT_ID_NUMERICO
-TELEGRAM_ALLOWED_USER_ID=SUBSTITUA_USER_ID_NUMERICO
+TELEGRAM_BOT_TOKEN='REPLACE_WITH_REAL_BOTFATHER_TOKEN'
+TELEGRAM_CHAT_ID=REPLACE_NUMERIC_CHAT_ID
+TELEGRAM_ALLOWED_USER_ID=REPLACE_NUMERIC_USER_ID
 ILIAS_TELEGRAM_SEND_DOCUMENTS=false
 ```
 
-O [modelo de ativação](examples/config/ilias-telegram.env.example) mostra o arquivo
-completo. Os IDs devem ser inteiros positivos sem `@`, username ou prefixo de grupo.
-Manter `ILIAS_TELEGRAM_SEND_DOCUMENTS=false` permite começar somente com texto e links.
+The [activation template](examples/config/ilias-telegram.env.example) shows the
+complete file. The IDs must be positive integers without `@`, username or group
+prefix. Keeping `ILIAS_TELEGRAM_SEND_DOCUMENTS=false` lets you start with text and
+links only.
 
-Valide a configuração, **sem rede e sem iniciar o worker**:
+Validate the configuration, **without network and without starting the worker**:
 
 ```sh
-.venv/bin/python - <<'PY'
+/opt/ilias/venv/bin/python - <<'PY'
 from pathlib import Path
 from ilias_check.config import CollectorConfig, ConfigurationError, load_environment
 from ilias_check.cache_config import CacheError
 from ilias_check.telegram import TelegramConfig
 
-path = Path.home() / '.config/ilias-check/ilias.env'
+path = Path('/opt/ilias/data/ilias.env')
 try:
     values = load_environment(path)
     required = ('ILIAS_BASE_URL', 'ILIAS_CLIENT_ID', 'ILIAS_USER', 'ILIAS_PASS',
                 'ILIAS_PENDING_ROOTS', 'TELEGRAM_BOT_TOKEN', 'TELEGRAM_CHAT_ID',
                 'TELEGRAM_ALLOWED_USER_ID')
-    if any('SUBSTITUA' in str(values.get(key, '')) for key in required):
-        raise ConfigurationError('Ainda há campos SUBSTITUA na configuração.')
+    if any('REPLACE' in str(values.get(key, '')) for key in required):
+        raise ConfigurationError('The configuration still contains REPLACE fields.')
     CollectorConfig.from_mapping(values)
     TelegramConfig.from_mapping(values, worker=True)
 except (ConfigurationError, CacheError) as exc:
-    raise SystemExit(f'Configuração inválida: {exc}') from None
-print('Configuração válida. Nenhuma conexão foi realizada.')
+    raise SystemExit(f'Invalid configuration: {exc}') from None
+print('Configuration valid. No connection was made.')
 PY
 ```
 
-Essa validação confere o formato, não autentica credenciais nem comprova que os IDs
-pertencem a você. Confirme essa identidade antes do teste real.
+This validation checks the format, not the credentials, and does not prove that the
+IDs belong to you. Confirm that identity before the real test.
 
-Você também pode simular o monitor:
+You can also simulate the monitor:
 
 ```sh
-.venv/bin/ilias-check monitor \
-  --env-file "$HOME/.config/ilias-check/ilias.env" \
+/opt/ilias/venv/bin/ilias-check monitor \
+  --env-file /opt/ilias/data/ilias.env \
   --dry-run
 ```
 
-Ele pode acessar o ILIAS e manter o cache local conforme a configuração, mas não
-chama o Telegram nem confirma notificações como entregues.
+It may access ILIAS and maintain the local cache according to the configuration, but
+it does not call Telegram or mark notifications as delivered.
 
-## 9. Faça a primeira execução real do bot
+## 9. Run the bot for the first time
 
-**Esta etapa habilita comunicação real com o Telegram.** Com os dados conferidos,
-inicie o worker em primeiro plano:
+**This step enables real communication with Telegram.** With the data verified,
+start the worker in the foreground:
 
 ```sh
-.venv/bin/ilias-check bot \
-  --env-file "$HOME/.config/ilias-check/ilias.env"
+/opt/ilias/venv/bin/ilias-check bot \
+  --env-file /opt/ilias/data/ilias.env
 ```
 
-Deixe esse terminal aberto. No chat privado do bot, envie `/start` e `/pendentes`.
-Ele deve responder em português, com títulos/instruções originais do ILIAS e
-horários das observações. `/verificar` deve conservar os casos inconclusivos.
-Não interprete uma lista vazia como conclusão de todas as tarefas.
+Leave that terminal open. In the bot's private chat, send `/start` and `/pendentes`.
+It should reply in Portuguese, with original ILIAS titles/instructions and observation
+times. `/verificar` must preserve inconclusive cases. Do not read an empty list as
+proof that all tasks are complete.
 
-Comandos iniciais:
+Initial commands:
 
-| Comando | Resultado esperado |
+| Command | Expected result |
 | --- | --- |
-| `/ajuda` | Ajuda e navegação. |
-| `/pendentes` | Uploads pendentes confirmados. |
-| `/entregues` | Histórico de entregas; não presume aprovação. |
-| `/encerradas` | Encerradas sem entrega. |
-| `/verificar` | Inconclusivas, fonte e convite a feedback. |
-| `/configuracoes` | Retenção e uso/quota do cache. |
-| `/materiais` | Materiais selecionáveis; tocar em um autoriza o envio daquela cópia pelo Telegram. |
-| `/relatar` | Relato revisável sobre o software; nenhuma issue é aberta automaticamente. |
+| `/ajuda` | Help and navigation. |
+| `/pendentes` | Confirmed pending uploads. |
+| `/entregues` | Submission history; approval is not implied. |
+| `/encerradas` | Closed without submission. |
+| `/verificar` | Inconclusive cases, source and feedback invitation. |
+| `/configuracoes` | Retention and cache usage/quota. |
+| `/materiais` | Selectable materials; tapping one authorizes sending that copy through Telegram. |
+| `/relatar` | Reviewable report about the software; no issue is opened automatically. |
 
-Mesmo com anexos **automáticos** desativados, um pedido explícito em `/materiais`
-pode baixar e enviar o material escolhido. Não toque nessa ação se ainda não
-quiser transmitir documentos. O bot não baixa arquivos que você enviar como resposta.
+Even with **automatic** attachments disabled, an explicit request in `/materiais`
+can download and send the selected material. Do not tap that action if you do not
+want to transmit documents yet. The bot does not download files you send in reply.
 
-Para testar notificações, em **outro terminal** execute:
+To test notifications, run this in **another terminal**:
 
 ```sh
-cd "$HOME/apps/ILIAS-Check"
-.venv/bin/ilias-check monitor \
-  --env-file "$HOME/.config/ilias-check/ilias.env"
+cd /opt/ilias/check
+/opt/ilias/venv/bin/ilias-check monitor \
+  --env-file /opt/ilias/data/ilias.env
 ```
 
-Essa execução pode enviar os alertas pendentes da fila — não é necessariamente
-uma única mensagem. Verifique o destinatário, os links e as qualificações de
-cobertura. Repetições normais sem mudanças não devem reenviar os mesmos alertas;
-um timeout ambíguo pode resultar em duplicatas numa tentativa posterior.
+That run may send queued pending alerts — not necessarily a single message. Check the
+recipient, links and coverage qualifications. Normal repetitions without changes must
+not resend the same alerts; an ambiguous timeout can produce duplicates on a later
+attempt.
 
-Se quiser sugestões de comandos no Telegram, use `/setcommands` no BotFather,
-selecione seu bot e envie, por exemplo:
+If you want command suggestions in Telegram, use `/setcommands` in BotFather, select
+your bot and send, for example:
 
 ```text
-start - Iniciar
-ajuda - Ajuda
-pendentes - Tarefas pendentes
-entregues - Historico de entregas
-encerradas - Encerradas sem entrega
-verificar - Casos inconclusivos
-materiais - Materiais de apoio
-configuracoes - Retencao e armazenamento
-relatar - Relatar problema no software
-cancelar - Cancelar dialogo
+start - Start
+ajuda - Help
+pendentes - Pending tasks
+entregues - Submission history
+encerradas - Closed without submission
+verificar - Inconclusive cases
+materiais - Support materials
+configuracoes - Retention and storage
+relatar - Report a software problem
+cancelar - Cancel dialog
 ```
 
-Isso configura apenas sugestões; a autorização continua sendo verificada pelo
-software. Consulte [comandos do Telegram](https://core.telegram.org/bots/features#commands).
+That configures suggestions only; the software still enforces authorization. See
+[Telegram commands](https://core.telegram.org/bots/features#commands).
 
-Ao terminar o teste em primeiro plano, use **Ctrl+C** para parar o worker antes
-de iniciar o serviço da próxima etapa.
+When you finish the foreground test, press **Ctrl+C** to stop the worker before
+starting the service in the next step.
 
-## 10. Mantenha o worker ativo com systemd de usuário
+## 10. Keep the worker running with user-level systemd
 
-Esta etapa é opcional para testes, mas útil em um host que ficará ligado.
-Execute como o mesmo usuário Linux usado na configuração e na coleta.
-Não rode simultaneamente o worker manual e o serviço.
+This step is optional for testing but useful on a host that stays powered on. Run it
+as the same Linux user used for configuration and collection. Do not run the manual
+worker and the service at the same time.
 
-Crie `~/.config/systemd/user/ilias-check-bot.service`:
+Create `~/.config/systemd/user/ilias-check-bot.service`:
 
 ```sh
 mkdir -p "$HOME/.config/systemd/user"
 nano "$HOME/.config/systemd/user/ilias-check-bot.service"
 ```
 
-Conteúdo completo:
+Complete contents:
 
 ```ini
 [Unit]
@@ -450,8 +466,8 @@ StartLimitBurst=5
 
 [Service]
 Type=simple
-WorkingDirectory=%h/apps/ILIAS-Check
-ExecStart=%h/apps/ILIAS-Check/.venv/bin/ilias-check bot --env-file %h/.config/ilias-check/ilias.env
+WorkingDirectory=/opt/ilias/check
+ExecStart=/opt/ilias/venv/bin/ilias-check bot --env-file /opt/ilias/data/ilias.env
 UMask=0077
 Restart=on-failure
 RestartSec=30
@@ -462,12 +478,12 @@ StandardError=journal
 WantedBy=default.target
 ```
 
-`%h` é expandido pelo systemd para o diretório pessoal do usuário. Se instalou em
-outro caminho, ajuste `WorkingDirectory` e `ExecStart`. O `.env` é lido pelo programa
-via `--env-file`; não é necessário um `EnvironmentFile` adicional.
-Referência: [unidades e especificadores do systemd](https://www.freedesktop.org/software/systemd/man/latest/systemd.unit.html#Specifiers).
+The absolute paths follow the `/opt/ilias` layout. If you install elsewhere, adjust
+`WorkingDirectory` and `ExecStart`. The program reads the `.env` through `--env-file`;
+no additional `EnvironmentFile` is needed. Reference:
+[systemd units and specifiers](https://www.freedesktop.org/software/systemd/man/latest/systemd.unit.html#Specifiers).
 
-Ative e confira:
+Enable and check:
 
 ```sh
 systemctl --user daemon-reload
@@ -476,149 +492,152 @@ systemctl --user status ilias-check-bot.service
 journalctl --user -u ilias-check-bot.service -n 50 --no-pager
 ```
 
-O serviço deve aparecer como `active (running)`. Verifique também uma resposta
-real a `/ajuda`; somente o estado do processo não comprova o funcionamento do chat.
-Para alterações futuras no `.env`, reinicie o worker:
+The service should show `active (running)`. Also verify a real reply to `/ajuda`;
+process state alone does not prove the chat works. For future `.env` changes, restart
+the worker:
 
 ```sh
 systemctl --user restart ilias-check-bot.service
 ```
 
-Para manter o gerenciador de usuário ativo após logout e iniciá-lo no boot, um
-administrador pode habilitar *linger* para sua conta:
+To keep the user manager running after logout and start it at boot, an administrator
+can enable *linger* for your account:
 
 ```sh
-sudo loginctl enable-linger SEU_USUARIO_LINUX
+sudo loginctl enable-linger YOUR_LINUX_USER
 ```
 
-Troque o placeholder pelo usuário real do host, não pelo username do Telegram.
-Essa opção modifica o comportamento de inicialização da conta; use-a somente se
-quiser esse serviço contínuo. Veja [loginctl](https://www.freedesktop.org/software/systemd/man/latest/loginctl.html).
-Sem systemd de usuário, mantenha o worker em primeiro plano ou use o supervisor
-do seu ambiente com o mesmo executável, usuário e arquivo de configuração.
+Replace the placeholder with the real host user, not the Telegram username. This
+option changes the account's startup behavior; use it only if you want this continuous
+service. See [loginctl](https://www.freedesktop.org/software/systemd/man/latest/loginctl.html).
+Without user-level systemd, keep the worker in the foreground or use your
+environment's supervisor with the same executable, user and configuration file.
 
-## 11. Agende as verificações a cada 12 horas
+## 11. Schedule checks every 12 hours
 
-O serviço acima recebe comandos; a atualização periódica é responsabilidade do
-monitor. O cron deve estar disponível e ativo no host. Prepare um log privado:
+The service above receives commands; periodic updates are the monitor's job. Cron must
+be available and active on the host. Prepare a private log:
 
 ```sh
-touch "$HOME/.local/share/ilias-check/monitor.log"
-chmod 600 "$HOME/.local/share/ilias-check/monitor.log"
+touch "/opt/ilias/data/monitor.log"
+chmod 600 "/opt/ilias/data/monitor.log"
 crontab -e
 ```
 
-Acrescente a linha abaixo, substituindo **todas** as ocorrências de
-`SEU_USUARIO_LINUX` pelo seu usuário/caminho real:
+Add this line to the crontab of the same user that runs the worker:
 
 ```cron
-0 */12 * * * /home/SEU_USUARIO_LINUX/apps/ILIAS-Check/.venv/bin/ilias-check monitor --env-file /home/SEU_USUARIO_LINUX/.config/ilias-check/ilias.env >> /home/SEU_USUARIO_LINUX/.local/share/ilias-check/monitor.log 2>&1
+0 */12 * * * /opt/ilias/venv/bin/ilias-check monitor --env-file /opt/ilias/data/ilias.env >> /opt/ilias/data/monitor.log 2>&1
 ```
 
-Não use `%h` no cron; ele é específico do exemplo de systemd. Se o diretório
-pessoal não fica em `/home`, utilize o caminho absoluto correto. Confira com:
+Check it with:
 
 ```sh
 crontab -l
 ```
 
-O exemplo roda às 00h e 12h no fuso do agendador/host. `ILIAS_TIMEZONE=Europe/Berlin`
-controla a interpretação dos prazos do ILIAS, não muda o fuso do cron. Não é preciso
-manter um shell com venv ativado: a linha usa o executável absoluto.
+The example runs at 00:00 and 12:00 in the scheduler/host timezone.
+`ILIAS_TIMEZONE=Europe/Berlin` controls how ILIAS deadlines are interpreted; it does
+not change the cron timezone. You do not need a shell with an activated venv: the line
+uses the absolute executable.
 
-O monitor impede sobreposição para a mesma conta/estado. Uma invocação que encontre
-a execução anterior em andamento pode sair com código `3`; não inicie novos workers
-para tentar contornar o lock. Confira o log e aguarde a próxima execução.
+The monitor prevents overlap for the same account/state. An invocation that finds the
+previous run still active may exit with code `3`; do not start new workers to work
+around the lock. Check the log and wait for the next run.
 
-`ILIAS_PENDING_REMINDER_HOURS=0` desativa lembretes repetidos: a coleta a cada 12 horas
-não implica uma mensagem a cada 12 horas. Para lembretes opcionais diários, configure
-`ILIAS_PENDING_REMINDER_HOURS=24`; alterações relevantes continuam podendo gerar alertas.
+`ILIAS_PENDING_REMINDER_HOURS=0` disables repeated reminders: collecting every 12 hours
+does not imply a message every 12 hours. For optional daily reminders, set
+`ILIAS_PENDING_REMINDER_HOURS=24`; relevant changes can still generate alerts.
 
-## 12. Ative materiais somente se desejar
+## 12. Enable materials only if you want them
 
-Há três controles diferentes:
+There are three different controls:
 
-| Objetivo | Configuração/ação |
+| Goal | Setting/action |
 | --- | --- |
-| Notificações com texto e links | `ILIAS_TELEGRAM_ENABLED=true`, `ILIAS_TELEGRAM_SEND_DOCUMENTS=false`. |
-| Cache local automático de apoio elegível | `ILIAS_PENDING_DOWNLOAD_SUPPORT=true`. Isso sozinho não autoriza envio pelo Telegram. |
-| Anexos automáticos nas notificações | `ILIAS_PENDING_DOWNLOAD_SUPPORT=true` e `ILIAS_TELEGRAM_SEND_DOCUMENTS=true`, após consentir com a transmissão dos documentos. |
-| Envio de um material escolhido | Ação explícita de download em `/materiais`, sem habilitar anexos automáticos futuros. |
+| Text and link notifications | `ILIAS_TELEGRAM_ENABLED=true`, `ILIAS_TELEGRAM_SEND_DOCUMENTS=false`. |
+| Automatic local cache of eligible support | `ILIAS_PENDING_DOWNLOAD_SUPPORT=true`. This alone does not authorize sending through Telegram. |
+| Automatic attachment in notifications | `ILIAS_PENDING_DOWNLOAD_SUPPORT=true` and `ILIAS_TELEGRAM_SEND_DOCUMENTS=true`, after consenting to document transmission. |
+| Sending one chosen material | Explicit download action in `/materiais`, without enabling future automatic attachments. |
 
-Para cache local, edite os campos existentes:
+For a local cache, edit the existing fields:
 
 ```dotenv
 ILIAS_PENDING_DOWNLOAD_SUPPORT=true
-ILIAS_PENDING_OUTPUT_DIR=~/.local/share/ilias-check/support
+ILIAS_PENDING_OUTPUT_DIR=/opt/ilias/data/support
 ILIAS_TELEGRAM_SEND_DOCUMENTS=false
 ```
 
-Somente se também quiser anexos automáticos:
+Only if you also want automatic attachments:
 
 ```dotenv
 ILIAS_TELEGRAM_SEND_DOCUMENTS=true
 ```
 
-Reinicie o worker após editar o arquivo e faça uma verificação manual antes de
-confiar no agendamento. Uma notificação já concluída não é necessariamente reenviada
-apenas por mudar a preferência de anexos.
+Restart the worker after editing the file and run a manual check before trusting the
+schedule. A notification that already completed is not necessarily resent just because
+the attachment preference changed.
 
-O limite padrão é 20 MiB por arquivo, 100 MiB por execução e 200 MB decimais no cache.
-Prazos/entregas confirmadas encerram associações; sem prazo, a retenção padrão é de
-168 horas. O bot permite retenção em `/configuracoes`, mas não altera quota nem oferece
-limpeza manual. Cópias já recebidas pelo Telegram não podem ser revogadas pela limpeza
-local. Veja [o ciclo do cache](docs/support-cache.md).
+Default limits are 20 MiB per file, 100 MiB per run and 200 MB decimal in the cache.
+Deadlines/confirmed submissions end associations; without a deadline, default retention
+is 168 hours. The bot allows retention changes in `/configuracoes` but does not change
+the quota or offer manual cleanup. Copies already received by Telegram cannot be
+revoked by local cleanup. See [the cache lifecycle](docs/support-cache.md).
 
-## 13. Pare, atualize ou faça backup
+## 13. Stop, update or back up
 
-Para parar e impedir a inicialização automática do worker:
+To stop the worker and prevent automatic startup:
 
 ```sh
 systemctl --user disable --now ilias-check-bot.service
 ```
 
-Remova/comente também a linha do monitor em `crontab -e` se quiser interromper as
-verificações agendadas. Definir `ILIAS_TELEGRAM_ENABLED=false` afeta novas invocações;
-um worker já em execução mantém a configuração carregada até ser parado/reiniciado.
-Nenhuma dessas ações entrega respostas ou modifica atividades no ILIAS.
+Also remove/comment the monitor line in `crontab -e` if you want to stop scheduled
+checks. Setting `ILIAS_TELEGRAM_ENABLED=false` affects new invocations; a worker
+already running keeps the loaded configuration until it is stopped/restarted. None of
+these actions submits answers or modifies activities in ILIAS.
 
-Antes de atualizar o código ou copiar o SQLite para backup, pause o worker e o
-agendamento e espere uma coleta em andamento terminar. Preserve o `.env`, o diretório
-de estado e suas permissões privadas. Apagar o estado perde histórico/deduplicação e
-pode gerar alertas iniciais novamente. O cache é descartável, não uma fonte oficial.
+Before updating the code or copying the SQLite database for backup, pause the worker
+and the schedule and wait for a running collection to finish. Preserve the `.env`, the
+state directory and their private permissions. Deleting state loses
+history/deduplication and can generate initial alerts again. The cache is disposable,
+not an official source.
 
-Com os processos parados, uma atualização na mesma branch pode usar:
+With the processes stopped, update `main`. If the checkout is still on the old
+development branch, the `switch` command below selects the integrated branch:
 
 ```sh
-cd "$HOME/apps/ILIAS-Check"
-git pull --ff-only
-.venv/bin/python -m pip install -e '.[test]'
-.venv/bin/pytest -q
+cd /opt/ilias/check
+git fetch origin
+git switch main
+git pull --ff-only origin main
+/opt/ilias/venv/bin/python -m pip install -e '.[test]'
+/opt/ilias/venv/bin/pytest -q
 ```
 
-Se houver mudanças locais ou instruções de migração na versão nova, resolva-as antes
-de continuar. Depois de conferir a configuração, reative o worker e restaure o
-agendamento que você havia pausado.
+If there are local changes or migration instructions in the new version, resolve them
+before continuing. After checking the configuration, re-enable the worker and restore
+the schedule you paused.
 
-## Diagnóstico rápido
+## Quick troubleshooting
 
-| Sintoma | O que conferir |
+| Symptom | What to check |
 | --- | --- |
-| O bot não responde | Serviço/terminal ativo, `ILIAS_TELEGRAM_ENABLED=true`, token, IDs e chat privado. Envie um comando novo após reiniciar. |
-| Consulta de IDs vazia | Envie `/start` ao bot correto; pare outros consumidores antes de repetir a consulta. |
-| Telegram HTTP 401 | Token incorreto ou revogado; substitua pelo token atual do BotFather. |
-| Telegram HTTP 409/conflito | Outro worker/consumidor de `getUpdates` ou uma configuração de webhook. Não use a consulta de IDs em paralelo com o worker. |
-| Telegram HTTP 403 | Bot bloqueado pelo destinatário ou chat sem acesso; confira o chat privado e inicie a conversa. |
-| Lista sem dados após instalar | Execute `monitor` uma vez com o mesmo `.env` e estado; `collect` e `monitor --dry-run` não alimentam as consultas persistentes. |
-| Código `2` / inconclusivo | Confira cobertura e `/verificar`; dados ausentes não provam entrega nem ausência de tarefas. |
-| Erro de autenticação no ILIAS | URL base, client ID, usuário/senha e compatibilidade do formulário; não publique HTML ou credenciais para diagnosticar. |
-| Erro de diretório privado | Proprietário, modo `0700`, caminho fora do Git e ausência de symlinks; arquivos gerenciados usam `0600`. |
-| Valor do `.env` parece ignorado | Variáveis exportadas no processo prevalecem; o worker precisa de reinício após edição. Não imprima o ambiente inteiro para investigar. |
-| Material não enviado | Consentimento, classificação atual, associação, prazo/TTL, integridade, tipo, tamanho e quota; use o link original se indisponível. |
-| `systemctl --user` sem barramento | Sessão/gerenciador de usuário indisponível nesse ambiente; confira a sessão Linux ou use um supervisor apropriado. |
+| The bot does not reply | Service/terminal active, `ILIAS_TELEGRAM_ENABLED=true`, token, IDs and private chat. Send a new command after restarting. |
+| Empty ID query | Send `/start` to the correct bot; stop other consumers before repeating the query. |
+| Telegram HTTP 401 | Wrong or revoked token; replace it with the current BotFather token. |
+| Telegram HTTP 409/conflict | Another worker/`getUpdates` consumer or a webhook configuration. Do not run the ID query in parallel with the worker. |
+| Telegram HTTP 403 | Bot blocked by the recipient or chat without access; check the private chat and start the conversation. |
+| No data after installing | Run `monitor` once with the same `.env` and state; `collect` and `monitor --dry-run` do not feed the persistent queries. |
+| Code `2` / inconclusive | Check coverage and `/verificar`; missing data does not prove submission or the absence of tasks. |
+| ILIAS authentication error | Base URL, client ID, username/password and form compatibility; do not publish HTML or credentials to diagnose. |
+| Private directory error | Owner, mode `0700`, path outside Git and absence of symlinks; managed files use `0600`. |
+| `.env` value seems ignored | Variables exported in the process take precedence; the worker must be restarted after editing. Do not print the whole environment to investigate. |
+| Material not sent | Consent, current classification, association, deadline/TTL, integrity, type, size and quota; use the original link if unavailable. |
+| `systemctl --user` without bus | User session/manager unavailable in this environment; check the Linux session or use an appropriate supervisor. |
 
-Instalação concluída significa: credenciais preenchidas e privadas, coleta local
-conferida, owner/chat corretos, resposta a um comando real, monitor executado com
-sucesso ou parcialidade compreendida, e worker/agendamento habilitados somente
-quando desejados. Consulte também [operações do Telegram](docs/telegram.md) e
-[o checklist de implantação](docs/deployment-checklist.md).
+A completed installation means: credentials filled in and private, local collection
+verified, correct owner/chat, a real command reply, monitor run with success or
+understood partiality, and worker/schedule enabled only when desired. Also see
+[Telegram operations](docs/telegram.md) and
+[the deployment checklist](docs/deployment-checklist.md).
