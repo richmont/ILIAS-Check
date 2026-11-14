@@ -1,0 +1,40 @@
+{
+  "schema_version": "1.0",
+  "checked_at": "2026-01-02T03:04:05Z",
+  "scope": {
+    "base_url": "https://ilias.example.edu",
+    "client_id": "example-client",
+    "root_ids": ["123456"]
+  },
+  "coverage": [
+    {
+      "root_id": "123456",
+      "complete": true,
+      "empty": true,
+      "objects_discovered": 1,
+      "warnings": []
+    }
+  ],
+  "objects": [
+    {
+      "id": "123456",
+      "type": "folder",
+      "type_code": "fold",
+      "title": "Synthetic empty folder",
+      "instructions": null,
+      "paths": [
+        {
+          "root_id": "123456",
+          "path": []
+        }
+      ],
+      "url": "https://ilias.example.edu/goto.php?target=fold_123456&client_id=example-client",
+      "url_kind": "activity",
+      "documents": [],
+      "sequence_resolution": null,
+      "sequence_steps": [],
+      "warnings": []
+    }
+  ],
+  "errors": []
+}

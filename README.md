@@ -1,7 +1,7 @@
 # ILIAS-Check
 
 Read-only ILIAS assignment monitoring and support-material access, with a planned
-Portuguese Telegram interface. Application code has not been implemented yet.
+Portuguese Telegram interface.
 
 ## Scope
 
@@ -29,8 +29,16 @@ Each change contains a proposal, specifications, design, and unchecked tasks.
 OpenSpec integration is configured for OpenCode. Planning validation does not
 constitute a live compatibility test.
 
+## Collector setup
+
+The first implementation milestone is the Python 3.11+ read-only collector.
+See [collector setup](docs/collector.md) for isolated installation, explicit
+environment configuration, scope limits, and privacy notes. Never commit
+credentials, runtime inventories, or course materials.
+
 ## License
 
 The project retains its existing AGPL-3.0 license. Any reused MIT authentication
 or utility code must retain its original notices and recorded upstream provenance.
-Course materials are not covered by the software license and must not be committed.
+See [third-party notices](THIRD_PARTY_NOTICES.md). Course materials are not
+covered by the software license and must not be committed.

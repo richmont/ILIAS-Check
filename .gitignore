@@ -151,6 +151,8 @@ activemq-data/
 
 # Environments
 .env
+.env.*
+!.env.example
 .envrc
 .venv
 env/
@@ -158,6 +160,13 @@ venv/
 ENV/
 env.bak/
 venv.bak/
+
+# Local collector output and state
+/runtime/
+/output/
+*.sqlite
+*.sqlite3
+*.sqlite3-*
 
 # Spyder project settings
 .spyderproject
