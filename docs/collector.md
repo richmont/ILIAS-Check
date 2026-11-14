@@ -55,7 +55,12 @@ placeholder-only `.env.example` remains trackable.
 
 ## Compatibility and privacy
 
-The initial adapter targets ILIAS 9_23 and supported login/repository layouts.
+The initial adapter was developed against ILIAS 9_23 and supported
+login/repository layouts. The primary project target is the specific ILIAS
+website connected through the MCP in this environment; compatibility with
+other installations is useful but not required. Adaptations should be based on
+the target website's observed behavior while preserving the read-only safety
+boundaries below.
 The login adapter selects the first form containing a password field (not an
 earlier search form), carries named hidden inputs, resolves a relative form
 action against the final login-page URL, and confirms success using an

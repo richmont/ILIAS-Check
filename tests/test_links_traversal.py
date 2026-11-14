@@ -9,7 +9,7 @@ import pytest
 from ilias_check.auth import AuthError
 from ilias_check.config import CollectorConfig
 from ilias_check.links import canonical_object_url, normalize_object_link
-from ilias_check.parser import parse_repository_page
+from ilias_check.parser import parse_repository_page, resolve_legacy_object_ref
 from ilias_check.traversal import RepositoryCrawler
 
 
@@ -47,6 +47,118 @@ def test_normalizes_modern_path_and_legacy_reference_link() -> None:
     assert modern.url == canonical_object_url(BASE, "academy", "fold", "123")
     assert legacy is not None and legacy.ref_id == "456"
     assert legacy.url == f"{BASE}/goto.php?target=obj_456&client_id=academy"
+    assert legacy.read_url == (
+        f"{BASE}/ilias.php?baseClass=ilRepositoryGUI&ref_id=456&client_id=academy"
+    )
+
+
+def test_legacy_read_url_is_rebuilt_from_validated_reference_only() -> None:
+    legacy = normalize_object_link(
+        "/ilias.php?baseClass=ilRepositoryGUI&ref_id=456&view=ignored",
+        f"{BASE}/ilias.php",
+        BASE,
+        "academy",
+    )
+    assert legacy is not None and legacy.ref_id == "456"
+    assert legacy.read_url == (
+        f"{BASE}/ilias.php?baseClass=ilRepositoryGUI&ref_id=456&client_id=academy"
+    )
+
+
+@pytest.mark.parametrize(
+    "href",
+    [
+        "/ilias.php?baseClass=ilRepositoryGUI&ref_id=0",
+        "/ilias.php?baseClass=ilRepositoryGUI&ref_id=abc",
+        "https://external.example/ilias.php?baseClass=ilRepositoryGUI&ref_id=456",
+        "/ilias.php?baseClass=ilRepositoryGUI&ref_id=456&sesskey=secret",
+        "/ilias.php?baseClass=ilRepositoryGUI&ref_id=456&cmd=next",
+    ],
+)
+def test_rejects_unsafe_legacy_repository_references(href: str) -> None:
+    assert normalize_object_link(href, f"{BASE}/ilias.php", BASE, "academy") is None
+
+
+def test_resolves_legacy_type_from_matching_safe_final_url() -> None:
+    legacy = normalize_object_link(
+        "/ilias.php?baseClass=ilRepositoryGUI&ref_id=456",
+        f"{BASE}/ilias.php",
+        BASE,
+        "academy",
+    )
+    assert legacy is not None
+    resolved = resolve_legacy_object_ref(
+        legacy,
+        f"{BASE}/goto.php?target=fold_456&client_id=academy",
+        "<main><h1>Folder</h1></main>",
+        BASE,
+        "academy",
+    )
+    assert resolved is not None
+    assert resolved.type_code == "fold"
+    assert resolved.object_type == "folder"
+    assert resolved.url == page_url("fold", "456")
+
+
+def test_resolves_legacy_type_from_matching_passive_page_metadata() -> None:
+    legacy = normalize_object_link(
+        "/ilias.php?baseClass=ilRepositoryGUI&ref_id=456",
+        f"{BASE}/ilias.php",
+        BASE,
+        "academy",
+    )
+    assert legacy is not None
+    resolved = resolve_legacy_object_ref(
+        legacy,
+        legacy.read_url or "",
+        '<main data-ref-id="456" data-object-type="exc"><h1>Exercise</h1></main>',
+        BASE,
+        "academy",
+    )
+    assert resolved is not None
+    assert resolved.type_code == "exc"
+    assert resolved.object_type == "exercise"
+
+
+@pytest.mark.parametrize(
+    ("response_url", "html"),
+    [
+        (
+            f"{BASE}/goto.php?target=fold_999",
+            '<main data-ref-id="456" data-object-type="exc"></main>',
+        ),
+        (
+            f"{BASE}/goto.php?target=unknown_456",
+            "<main></main>",
+        ),
+        (
+            f"{BASE}/download.php?target=fold_456",
+            "<main></main>",
+        ),
+        (
+            f"{BASE}/ilias.php?baseClass=ilRepositoryGUI&ref_id=456",
+            '<main data-ref-id="456" data-object-type="unknown"></main>',
+        ),
+        (
+            f"{BASE}/ilias.php?baseClass=ilRepositoryGUI&ref_id=456",
+            '<nav data-ref-id="456" data-object-type="fold"></nav>',
+        ),
+    ],
+)
+def test_rejects_untrusted_or_ambiguous_type_evidence(
+    response_url: str, html: str
+) -> None:
+    legacy = normalize_object_link(
+        "/ilias.php?baseClass=ilRepositoryGUI&ref_id=456",
+        f"{BASE}/ilias.php",
+        BASE,
+        "academy",
+    )
+    assert legacy is not None
+    assert (
+        resolve_legacy_object_ref(legacy, response_url, html, BASE, "academy")
+        is None
+    )
 
 
 def test_rejects_off_origin_and_session_bearing_links() -> None:
@@ -239,6 +351,146 @@ def test_request_budget_failure_is_visible_and_partial() -> None:
     assert not result.coverage[0].complete
     assert result.errors[0]["category"] == "object_read_failed"
     assert result.errors[0]["object_id"] == "1002"
+
+
+def test_crawls_readable_unresolved_legacy_reference_and_its_children() -> None:
+    root_url = page_url("fold", "1001")
+    legacy = normalize_object_link(
+        "/ilias.php?baseClass=ilRepositoryGUI&ref_id=456",
+        f"{BASE}/ilias.php",
+        BASE,
+        "academy",
+    )
+    assert legacy is not None and legacy.read_url is not None
+    child_url = page_url("fold", "457")
+    auth = FakeAuthenticator(
+        {
+            root_url: (
+                '<main><div class="ilContainerListItem">'
+                '<a href="/ilias.php?baseClass=ilRepositoryGUI&ref_id=456">'
+                "Legacy container</a></div></main>"
+            ),
+            legacy.read_url: (
+                '<main><h1>Legacy container</h1>'
+                '<div class="ilContainerListItem">'
+                '<a href="/goto.php?target=fold_457">Child</a>'
+                "</div></main>"
+            ),
+            child_url: "<main><h1>Child</h1></main>",
+        }
+    )
+
+    result = RepositoryCrawler(make_config(), auth).collect()
+
+    unresolved = result.objects["obj:456"]
+    assert unresolved.object_type == "unresolved"
+    assert unresolved.url == legacy.read_url
+    assert "unresolved_legacy_repository_reference" in unresolved.warnings
+    assert auth.calls.count(legacy.read_url) == 1
+    assert all("target=obj_456" not in url for url in auth.calls)
+    assert "fold:457" in result.objects
+    assert not result.coverage[0].complete
+    assert "unresolved_legacy_repository_reference" in result.coverage[0].warnings
+
+
+def test_failed_legacy_reference_read_remains_visible_and_partial() -> None:
+    root_url = page_url("fold", "1001")
+    legacy = normalize_object_link(
+        "/ilias.php?baseClass=ilRepositoryGUI&ref_id=456",
+        f"{BASE}/ilias.php",
+        BASE,
+        "academy",
+    )
+    assert legacy is not None and legacy.read_url is not None
+    auth = FakeAuthenticator(
+        {
+            root_url: (
+                '<main><div class="ilContainerListItem">'
+                '<a href="/ilias.php?baseClass=ilRepositoryGUI&ref_id=456">'
+                "Legacy container</a></div></main>"
+            )
+        }
+    )
+
+    result = RepositoryCrawler(make_config(), auth).collect()
+
+    assert "obj:456" in result.objects
+    assert result.objects["obj:456"].url == legacy.read_url
+    assert not result.coverage[0].complete
+    assert result.errors[0]["category"] == "object_read_failed"
+    assert result.errors[0]["object_id"] == "456"
+
+
+def test_resolved_legacy_reference_is_promoted_with_its_path() -> None:
+    root_url = page_url("fold", "1001")
+    legacy = normalize_object_link(
+        "/ilias.php?baseClass=ilRepositoryGUI&ref_id=456",
+        f"{BASE}/ilias.php",
+        BASE,
+        "academy",
+    )
+    assert legacy is not None and legacy.read_url is not None
+    auth = FakeAuthenticator(
+        {
+            root_url: (
+                '<main><div class="ilContainerListItem">'
+                '<a href="/ilias.php?baseClass=ilRepositoryGUI&ref_id=456">'
+                "Legacy container</a></div></main>"
+            ),
+            legacy.read_url: (
+                '<main data-ref-id="456" data-object-type="fold">'
+                "<h1>Resolved folder</h1></main>"
+            ),
+        }
+    )
+
+    result = RepositoryCrawler(make_config(), auth).collect()
+
+    assert "obj:456" not in result.objects
+    resolved = result.objects["fold:456"]
+    assert resolved.object_type == "folder"
+    assert resolved.title == "Resolved folder"
+    assert resolved.url == page_url("fold", "456")
+    assert resolved.paths == [{"root_id": "1001", "path": ["Legacy container"]}]
+    assert "unresolved_legacy_repository_reference" not in resolved.warnings
+    assert result.coverage[0].complete
+
+
+def test_modern_and_legacy_links_to_same_object_fetch_once() -> None:
+    root_url = page_url("fold", "1001")
+    folder_url = page_url("fold", "456")
+    legacy = normalize_object_link(
+        "/ilias.php?baseClass=ilRepositoryGUI&ref_id=456",
+        f"{BASE}/ilias.php",
+        BASE,
+        "academy",
+    )
+    assert legacy is not None and legacy.read_url is not None
+    auth = FakeAuthenticator(
+        {
+            root_url: (
+                '<main><div class="ilContainerListItem">'
+                '<a href="/ilias.php?baseClass=ilRepositoryGUI&ref_id=456">'
+                "Legacy path</a></div>"
+                '<div class="ilContainerListItem">'
+                '<a href="/goto.php?target=fold_456">Modern path</a></div>'
+                "</main>"
+            ),
+            folder_url: "<main><h1>Shared folder</h1></main>",
+        }
+    )
+
+    result = RepositoryCrawler(make_config(), auth).collect()
+
+    assert auth.calls.count(folder_url) == 1
+    assert legacy.read_url not in auth.calls
+    assert "obj:456" not in result.objects
+    resolved = result.objects["fold:456"]
+    assert {tuple(path["path"]) for path in resolved.paths} == {
+        ("Legacy path",),
+        ("Modern path",),
+    }
+    assert result.coverage[0].objects_discovered == 2
 
 
 def test_shared_failed_object_marks_every_reaching_root_incomplete() -> None:

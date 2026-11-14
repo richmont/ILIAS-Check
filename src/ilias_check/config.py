@@ -54,7 +54,7 @@ class CollectorConfig:
         base_url = _required(values, "ILIAS_BASE_URL")
         client_id = _required(values, "ILIAS_CLIENT_ID")
         username = _required(values, "ILIAS_USER")
-        password = _required(values, "ILIAS_PASS")
+        password = _required(values, "ILIAS_PASS", preserve_whitespace=True)
         roots_text = _required(values, "ILIAS_PENDING_ROOTS")
 
         parsed_url = urlsplit(base_url)
@@ -106,11 +106,16 @@ class CollectorConfig:
         )
 
 
-def _required(values: Mapping[str, str | None], key: str) -> str:
+def _required(
+    values: Mapping[str, str | None],
+    key: str,
+    *,
+    preserve_whitespace: bool = False,
+) -> str:
     value = values.get(key)
     if value is None or not value.strip():
         raise ConfigurationError(f"Missing required configuration: {key}.")
-    return value.strip()
+    return value if preserve_whitespace else value.strip()
 
 
 def _positive_int(values: Mapping[str, str | None], key: str, default: int) -> int:

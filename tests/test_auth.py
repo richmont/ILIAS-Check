@@ -155,3 +155,42 @@ def test_second_expiry_fails_after_only_one_recovery() -> None:
     transport = FakeTransport([login, dashboard, expired, login, dashboard, expired])
     with pytest.raises(AuthError, match="one recovery"):
         Authenticator(CONFIG, transport).get("https://ilias.example.edu/goto.php?target=fold_1")
+
+
+@pytest.mark.parametrize(
+    "html",
+    [
+        '<form action="/login.php"><input type="text" name="login">'
+        '<input type="password" name="passwd"></form>',
+        '<form><input type="text" name="username">'
+        '<input type="password" name="password"></form>',
+    ],
+)
+def test_expired_session_detects_login_form_without_legacy_markers(html: str) -> None:
+    login = Response(fixture("search-first.html"))
+    dashboard = Response(fixture("dashboard.html"), "https://ilias.example.edu/ilias.php")
+    expired = Response(html, "https://ilias.example.edu/goto.php?target=fold_1001")
+    content = Response("<main>Repository</main>", "https://ilias.example.edu/goto.php")
+    transport = FakeTransport([login, dashboard, expired, login, dashboard, content])
+
+    response = Authenticator(CONFIG, transport).get(
+        "https://ilias.example.edu/goto.php?target=fold_1001"
+    )
+
+    assert response is content
+    assert len(transport.posts) == 2
+
+
+def test_expired_session_detects_login_endpoint_redirect_without_form_markers() -> None:
+    login = Response(fixture("search-first.html"))
+    dashboard = Response(fixture("dashboard.html"), "https://ilias.example.edu/ilias.php")
+    expired = Response("<main>Please sign in</main>", "https://ilias.example.edu/login.php")
+    content = Response("<main>Repository</main>", "https://ilias.example.edu/goto.php")
+    transport = FakeTransport([login, dashboard, expired, login, dashboard, content])
+
+    response = Authenticator(CONFIG, transport).get(
+        "https://ilias.example.edu/goto.php?target=fold_1001"
+    )
+
+    assert response is content
+    assert len(transport.posts) == 2

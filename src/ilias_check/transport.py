@@ -171,7 +171,8 @@ class SafeTransport:
             raise TransportError("The URL is outside the configured ILIAS installation path.")
         for key, _value in parse_qsl(parsed.query, keep_blank_values=True):
             lowered = key.lower()
-            if lowered in _ACTION_QUERY_KEYS or any(
+            action_key = lowered.split("[", 1)[0]
+            if action_key in _ACTION_QUERY_KEYS or any(
                 part in lowered for part in _SENSITIVE_QUERY_PARTS
             ):
                 raise TransportError("Action or session parameters are not allowed on reads.")

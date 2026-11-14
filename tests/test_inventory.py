@@ -113,6 +113,35 @@ def test_all_failed_result_is_schema_valid_not_an_empty_success() -> None:
     assert inventory["errors"][0]["category"] == "object_read_failed"
 
 
+def test_unresolved_legacy_reference_is_schema_valid_and_partial() -> None:
+    legacy_url = (
+        f"{BASE}/ilias.php?baseClass=ilRepositoryGUI"
+        "&ref_id=456&client_id=academy"
+    )
+    inventory = validate_result(
+        "1001",
+        {
+            url("1001"): (
+                '<main><div class="ilContainerListItem">'
+                '<a href="/ilias.php?baseClass=ilRepositoryGUI&ref_id=456">'
+                "Legacy object</a></div></main>"
+            ),
+            legacy_url: "<main><h1>Legacy object</h1></main>",
+        },
+    )
+
+    assert not inventory["coverage"][0]["complete"]
+    assert not inventory["coverage"][0]["empty"]
+    assert "unresolved_legacy_repository_reference" in inventory["coverage"][0][
+        "warnings"
+    ]
+    unresolved = next(item for item in inventory["objects"] if item["id"] == "456")
+    assert unresolved["type"] == "unresolved"
+    assert unresolved["type_code"] == "obj"
+    assert unresolved["url"] == legacy_url
+    assert "unresolved_legacy_repository_reference" in unresolved["warnings"]
+
+
 def test_exported_links_are_canonical_and_token_free() -> None:
     inventory = validate_result("1001", {url("1001"): "<main><h1>Root</h1></main>"})
     for record in inventory["objects"]:

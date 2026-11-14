@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from urllib.parse import parse_qs, urljoin, urlsplit
+from urllib.parse import parse_qs, urlencode, urljoin, urlsplit, urlunsplit
 
 from ilias_check.transport import _has_sensitive_url_material, _origin
 
@@ -64,6 +64,7 @@ class ObjectRef:
     type_code: str
     object_type: str
     url: str
+    read_url: str | None = None
 
     @property
     def key(self) -> str:
@@ -124,12 +125,13 @@ def normalize_object_link(
     if _has_sensitive_url_material(absolute):
         return None
     if any(
-        key.lower() in _MUTATION_QUERY_KEYS
-        for key, _value in parse_qs(parsed.query, keep_blank_values=True).items()
+        key.lower().split("[", 1)[0] in _MUTATION_QUERY_KEYS
+        for key in parse_qs(parsed.query, keep_blank_values=True)
     ):
         return None
 
     found: tuple[str, str] | None = None
+    legacy_read_url: str | None = None
     if parsed.path.lower().endswith("/goto.php") or "/goto.php/" in parsed.path.lower():
         target = parse_qs(parsed.query).get("target", [])
         if target:
@@ -151,12 +153,29 @@ def normalize_object_link(
         if found is None:
             ref_id = (query.get("ref_id") or [None])[0]
             if ref_id and re.fullmatch(r"[1-9][0-9]*", ref_id):
-                type_code = (
+                base_class = (query.get("baseClass") or [""])[0]
+                explicit_type = (
                     (query.get("obj_type") or query.get("type") or [None])[0]
-                    or _type_from_base_class((query.get("baseClass") or [""])[0])
                 )
+                type_code = explicit_type or _type_from_base_class(base_class)
                 if type_code:
                     found = type_code, ref_id
+                    if not explicit_type and base_class.lower() == "ilrepositorygui":
+                        legacy_read_url = urlunsplit(
+                            (
+                                parsed.scheme,
+                                parsed.netloc,
+                                parsed.path,
+                                urlencode(
+                                    {
+                                        "baseClass": "ilRepositoryGUI",
+                                        "ref_id": str(int(ref_id)),
+                                        "client_id": client_id,
+                                    }
+                                ),
+                                "",
+                            )
+                        )
 
     if found is None:
         return None
@@ -167,8 +186,13 @@ def normalize_object_link(
     return ObjectRef(
         ref_id=ref_id,
         type_code=type_code.lower(),
-        object_type=_TYPE_NAMES.get(type_code.lower(), "unsupported"),
+        object_type=(
+            "unresolved"
+            if legacy_read_url is not None
+            else _TYPE_NAMES.get(type_code.lower(), "unsupported")
+        ),
         url=canonical_object_url(base_url, client_id, type_code.lower(), ref_id),
+        read_url=legacy_read_url,
     )
 
 

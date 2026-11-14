@@ -17,8 +17,12 @@ should ignore fields they do not use.
 | `errors` | Redacted categories and affected root/object IDs; never raw response bodies |
 
 Each object includes its installation-local ID/type, unchanged source title,
-canonical session-free URL, URL kind, root-relative paths, document references,
-sequence resolution/steps where available, and warnings. `url_kind` is
+safe session-free URL, URL kind, root-relative paths, document references,
+sequence resolution/steps where available, and warnings. Resolved objects use a
+canonical activity URL. A legacy repository reference whose concrete type
+cannot be resolved remains visible with `type: "unresolved"`, `type_code: "obj"`,
+its sanitized same-origin legacy read URL, and an
+`unresolved_legacy_repository_reference` warning. `url_kind` is
 `sequence_entry` when the platform exposes only a learning-sequence entry point;
 it does not promise a direct upload form.
 
@@ -38,6 +42,10 @@ investigation result and its live-compatibility limitation.
   object was discovered; the root record itself remains in `objects`.
 - `complete: false` identifies partial/unknown coverage, not an empty result.
   Check `warnings` and `errors` before interpreting absence of an object.
+- `unresolved_legacy_repository_reference` means a legacy object was readable
+  but its concrete type was not exposed by supported passive metadata. Any
+  child links found in recognized content are still traversed within the
+  configured limits.
 - A failed root may coexist with successful roots; successful results remain in
   the output.
 - CLI exit codes are `0` for complete results, `2` for partial results, and `1`

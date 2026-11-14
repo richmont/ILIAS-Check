@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any, Protocol
-from urllib.parse import urlencode, urljoin
+from urllib.parse import urlencode, urljoin, urlsplit
 
 from bs4 import BeautifulSoup
 
@@ -86,7 +86,7 @@ class Authenticator:
             response = self.transport.get(url)
         except Exception:
             raise AuthError("The ILIAS read request failed.") from None
-        if not self._looks_like_login_page(response.text):
+        if not self._is_expired_session(response):
             return response
 
         self._authenticated = False
@@ -95,17 +95,46 @@ class Authenticator:
             response = self.transport.get(url)
         except Exception:
             raise AuthError("The ILIAS read request failed after session recovery.") from None
-        if self._looks_like_login_page(response.text):
+        if self._is_expired_session(response):
             self._authenticated = False
             raise AuthError("The ILIAS session expired again after one recovery attempt.")
         return response
 
     @staticmethod
+    def _is_expired_session(response: Any) -> bool:
+        if Authenticator._looks_like_login_page(response.text):
+            return True
+        # A safe read may be redirected to the login endpoint without retaining
+        # the usual form markers (for example, when the page is customized).
+        response_url = getattr(response, "url", "") or ""
+        return urlsplit(response_url).path.lower().rstrip("/").endswith("/login.php")
+
+    @staticmethod
     def _looks_like_login_page(html: str) -> bool:
         soup = BeautifulSoup(html, "html.parser")
-        has_password = soup.find("input", attrs={"type": "password"}) is not None
-        has_auth_marker = "doStandardAuthentication" in html or "force_login" in html
-        return has_password and has_auth_marker and not Authenticator._has_logout_marker(html)
+        if Authenticator._has_logout_marker(html):
+            return False
+        for form in soup.find_all("form"):
+            has_password = form.find("input", attrs={"type": "password"}) is not None
+            if not has_password:
+                continue
+            has_auth_marker = form.find(
+                attrs={"name": lambda name: name and "authentication" in name.lower()}
+            ) is not None or form.find(
+                attrs={"name": lambda name: name and name.lower() in {"login", "username", "user", "email"}}
+            ) is not None
+            action = str(form.get("action", "")).lower().split("?", 1)[0]
+            login_action = action.rstrip("/").endswith(
+                ("login.php", "authenticate.php")
+            )
+            if (
+                has_auth_marker
+                or login_action
+                or "doStandardAuthentication" in html
+                or "force_login" in html
+            ):
+                return True
+        return False
 
     @staticmethod
     def _has_logout_marker(html: str) -> bool:

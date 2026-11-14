@@ -6,7 +6,11 @@ import re
 from dataclasses import dataclass, field
 from bs4 import BeautifulSoup, Tag
 
-from ilias_check.links import ObjectRef, normalize_object_link, object_ref_from_parts
+from ilias_check.links import (
+    ObjectRef,
+    normalize_object_link,
+    object_ref_from_parts,
+)
 
 
 _CONTENT_SELECTORS = (
@@ -52,6 +56,50 @@ class ParsedPage:
     sequence_steps: list[ParsedLink] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
     sequence_resolution: str | None = None
+
+
+def resolve_legacy_object_ref(
+    ref: ObjectRef,
+    response_url: str,
+    html: str,
+    base_url: str,
+    client_id: str,
+) -> ObjectRef | None:
+    """Resolve a legacy reference only from explicit, matching passive metadata."""
+    if ref.read_url is None:
+        return None
+
+    response_path = response_url.split("?", 1)[0].rstrip("/").rsplit("/", 1)[-1]
+    if response_path.lower() in {"goto.php", "ilias.php", "repository.php"}:
+        response_ref = normalize_object_link(
+            response_url, ref.read_url, base_url, client_id
+        )
+        if response_ref is not None and response_ref.object_type not in {
+            "unsupported",
+            "unresolved",
+        }:
+            if response_ref.ref_id != ref.ref_id:
+                return None
+            return response_ref
+
+    soup = BeautifulSoup(html, "html.parser")
+    candidates: dict[str, ObjectRef] = {}
+    for node in soup.select("[data-ref-id][data-object-type]"):
+        if not isinstance(node, Tag) or _inside_excluded_area(node):
+            continue
+        candidate = object_ref_from_parts(
+            base_url,
+            client_id,
+            str(node.get("data-object-type", "")),
+            str(node.get("data-ref-id", "")),
+        )
+        if (
+            candidate is not None
+            and candidate.ref_id == ref.ref_id
+            and candidate.object_type != "unsupported"
+        ):
+            candidates[candidate.key] = candidate
+    return next(iter(candidates.values())) if len(candidates) == 1 else None
 
 
 def parse_repository_page(
@@ -175,6 +223,10 @@ def _page_instructions(soup: BeautifulSoup) -> str | None:
 
 def _inside_excluded_area(anchor: Tag) -> bool:
     for selector in _EXCLUDED_ANCESTORS:
+        if anchor.parent and any(
+            element is anchor for element in anchor.parent.select(selector)
+        ):
+            return True
         if anchor.find_parent(selector):
             return True
     return False

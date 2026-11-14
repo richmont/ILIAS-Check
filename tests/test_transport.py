@@ -62,6 +62,9 @@ def test_safe_get_has_timeout_tls_and_redirects_disabled() -> None:
         "https://ilias.example.edu/goto.php?target=seq_1&cmd=next",
         "https://ilias.example.edu/delete.php?ref_id=1",
         "https://ilias.example.edu/goto.php?target=fold_1001&token=secret",
+        "https://ilias.example.edu/goto.php?target=fold_1001&cmd[next]=1",
+        "https://ilias.example.edu/goto.php?target=fold_1001&cmd%5Bnext%5D=1",
+        "https://ilias.example.edu/goto.php?target=fold_1001&save[draft]=1",
     ],
 )
 def test_forbidden_get_never_reaches_transport(url: str) -> None:

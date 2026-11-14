@@ -55,6 +55,17 @@ def test_missing_required_value_is_rejected() -> None:
         CollectorConfig.from_mapping(BASE | {"ILIAS_PENDING_ROOTS": " "})
 
 
+@pytest.mark.parametrize("password", [" leading", "trailing ", " both "])
+def test_password_whitespace_is_preserved(password: str) -> None:
+    config = CollectorConfig.from_mapping(BASE | {"ILIAS_PASS": password})
+    assert config.password == password
+
+
+def test_whitespace_only_password_is_rejected() -> None:
+    with pytest.raises(ConfigurationError, match="ILIAS_PASS"):
+        CollectorConfig.from_mapping(BASE | {"ILIAS_PASS": " \t "})
+
+
 def test_explicit_dotenv_from_unrelated_working_directory(tmp_path: Path) -> None:
     env_file = tmp_path / "chosen.env"
     env_file.write_text("\n".join(f"{key}={value}" for key, value in BASE.items()))
