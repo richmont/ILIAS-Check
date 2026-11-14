@@ -53,6 +53,9 @@ See [classification rules](docs/assignment-classification.md) and
 
 ## Installation and configuration
 
+For the complete setup, credential examples, BotFather/ID configuration, first-run
+checks and optional systemd/cron activation, follow [INSTALL.md](INSTALL.md) (Portuguese).
+
 Use Python **3.11+** on Linux. The private cache and monitoring state use POSIX file
 permissions/locks and Linux directory-descriptor paths.
 
