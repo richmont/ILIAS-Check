@@ -7,6 +7,7 @@ from typing import Any
 
 from ilias_check.config import CollectorConfig
 from ilias_check.traversal import TraversalResult
+from ilias_check.results import classify_inventory
 
 
 SCHEMA_VERSION = "1.0"
@@ -21,7 +22,7 @@ def build_inventory(
     if timestamp.tzinfo is None:
         raise ValueError("Inventory timestamps must include a timezone.")
     timestamp = timestamp.astimezone(timezone.utc)
-    return {
+    inventory = {
         "schema_version": SCHEMA_VERSION,
         "checked_at": timestamp.isoformat(timespec="seconds").replace("+00:00", "Z"),
         "scope": {
@@ -54,6 +55,8 @@ def build_inventory(
                 "sequence_resolution": item.sequence_resolution,
                 "sequence_steps": item.sequence_steps,
                 "warnings": sorted(set(item.warnings)),
+                **({"assignments": item.assignments} if item.object_type == "exercise" else {}),
+                **({"sequence_outline": item.sequence_outline} if item.object_type == "learning_sequence" else {}),
             }
             for item in sorted(
                 result.objects.values(),
@@ -62,3 +65,4 @@ def build_inventory(
         ],
         "errors": result.errors,
     }
+    return classify_inventory(inventory, config.classification_policy)

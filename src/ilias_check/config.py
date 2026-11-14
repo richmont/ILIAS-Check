@@ -5,12 +5,14 @@ from __future__ import annotations
 import math
 import os
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Mapping
 from urllib.parse import urlsplit
 
 from dotenv import dotenv_values
+from ilias_check.policy import ClassificationPolicy, PolicyError
+from ilias_check.cache_config import CachePolicy, CacheError
 
 
 class ConfigurationError(ValueError):
@@ -28,6 +30,8 @@ class CollectorConfig:
     timeout_seconds: float = 20.0
     max_depth: int = 12
     max_requests: int = 500
+    classification_policy: ClassificationPolicy = field(default_factory=ClassificationPolicy)
+    cache_policy: CachePolicy = field(default_factory=CachePolicy)
 
     @classmethod
     def from_environment(
@@ -36,18 +40,7 @@ class CollectorConfig:
         environ: Mapping[str, str] | None = None,
     ) -> "CollectorConfig":
         """Load only the selected dotenv file, then overlay the process environment."""
-        values: dict[str, str | None] = {}
-        if env_file is not None:
-            path = Path(env_file).expanduser()
-            if not path.is_file():
-                raise ConfigurationError("The explicitly selected dotenv file is unavailable.")
-            try:
-                values.update(dotenv_values(path, encoding="utf-8"))
-            except (OSError, UnicodeError):
-                raise ConfigurationError("The explicitly selected dotenv file could not be read.") from None
-
-        values.update(dict(os.environ if environ is None else environ))
-        return cls.from_mapping(values)
+        return cls.from_mapping(load_environment(env_file, environ))
 
     @classmethod
     def from_mapping(cls, values: Mapping[str, str | None]) -> "CollectorConfig":
@@ -90,6 +83,11 @@ class CollectorConfig:
         timeout = _positive_float(values, "ILIAS_TIMEOUT_SECONDS", 20.0)
         max_depth = _positive_int(values, "ILIAS_PENDING_MAX_DEPTH", 12)
         max_requests = _positive_int(values, "ILIAS_PENDING_MAX_REQUESTS", 500)
+        try:
+            policy = ClassificationPolicy.from_mapping(values)
+            cache_policy = CachePolicy.from_mapping(values)
+        except (PolicyError, CacheError) as exc:
+            raise ConfigurationError(str(exc)) from None
 
         # Normalize installation URL without changing its path semantics.
         normalized_base = base_url.rstrip("/")
@@ -103,7 +101,26 @@ class CollectorConfig:
             timeout_seconds=timeout,
             max_depth=max_depth,
             max_requests=max_requests,
+            classification_policy=policy,
+            cache_policy=cache_policy,
         )
+
+
+def load_environment(
+    env_file: str | Path | None = None, environ: Mapping[str, str] | None = None,
+) -> dict[str, str | None]:
+    """Load only an explicit dotenv file, then overlay the process environment."""
+    values: dict[str, str | None] = {}
+    if env_file is not None:
+        path = Path(env_file).expanduser()
+        if not path.is_file():
+            raise ConfigurationError("The explicitly selected dotenv file is unavailable.")
+        try:
+            values.update(dotenv_values(path, encoding="utf-8"))
+        except (OSError, UnicodeError):
+            raise ConfigurationError("The explicitly selected dotenv file could not be read.") from None
+    values.update(dict(os.environ if environ is None else environ))
+    return values
 
 
 def _required(

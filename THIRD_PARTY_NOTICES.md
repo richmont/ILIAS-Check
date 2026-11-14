@@ -15,6 +15,17 @@ HTTP session, credential injection, same-origin validation, redirect policy,
 retry logic, and all other behavior are implemented independently. No MCP
 runtime or mutation-capable service is imported.
 
+## ILIAS MCP read-parser compatibility
+
+`src/ilias_check/exercises.py` also adapts the deadline/status extraction and
+submission/team table metadata extraction from `src/services/exercise_service.py`
+in the same repository and revision above. The repository selectors, routes, and
+synthetic parser contracts in `tests/test_mcp_read_parity.py` and its fixtures
+follow `src/services/repository_service.py`, `src/services/exercise_service.py`,
+and their upstream tests. These adapted portions are covered by the same MIT
+notice below. The checker implements its own transport policy and orchestration;
+it does not import the MCP server or its upload, deletion, or membership actions.
+
 The adapted portion is distributed under the following upstream MIT license:
 
 ```text

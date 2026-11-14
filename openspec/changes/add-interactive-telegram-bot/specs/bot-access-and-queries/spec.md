@@ -43,7 +43,11 @@ Activity details SHALL offer “Abrir no ILIAS” or “Abrir sequência” acco
 
 #### Scenario: Unknown candidate
 - **WHEN** the bot cannot interpret the current state
-- **THEN** it shows “Precisa verificar”, the original link, and access to the software bug-report flow
+- **THEN** it shows “Inconclusivo — precisa verificar”, observation time, a brief explanation, the original link, and access to the software bug-report flow
+
+#### Scenario: Feedback about an inconclusive activity
+- **WHEN** an activity remains inconclusive because source details or sequence identifiers are unavailable
+- **THEN** the bot invites the learner to explain how that activity should be displayed through the expected/actual software-feedback dialogue, without treating feedback alone as proof of delivery, completion, or non-applicability
 
 ### Requirement: Explicit support download request
 An authorized request SHALL permit sending selected support with disclosure that it is transmitted through Telegram. Each delivery SHALL recheck activity applicability, current cache eligibility, and file integrity, and show download/expiry timestamps plus the authoritative source link. Old buttons or Telegram file IDs SHALL NOT bypass checks.

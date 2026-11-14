@@ -7,11 +7,12 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
-from urllib.parse import parse_qsl, urljoin, urlsplit
+from urllib.parse import parse_qsl, parse_qs, urljoin, urlsplit
 
 import requests
 
 from ilias_check.config import CollectorConfig
+from ilias_check.read_routes import passive_read_route
 
 
 class TransportError(RuntimeError):
@@ -35,6 +36,11 @@ _ACTION_QUERY_KEYS = {
     "step",
     "next",
     "previous",
+    "lsocmd",
+    "lsov",
+    "lsoni",
+    "lson",
+    "lsop",
 }
 _SENSITIVE_QUERY_PARTS = ("token", "session", "sesskey", "csrf", "authkey", "phpsessid")
 _TRANSIENT_STATUS = {429, 500, 502, 503, 504}
@@ -61,6 +67,62 @@ class SafeTransport:
     def get(self, url: str) -> Any:
         self._validate_read_url(url)
         return self._request_with_retry("GET", url)
+
+    def stream_document(self, material: dict, headers: dict | None = None) -> Any:
+        """A separate byte route: ordinary metadata GET remains unable to download."""
+        url = material.get("download_url")
+        if not url or material.get("role") != "support":
+            raise TransportError("Document is not confirmed support.")
+        current = url
+        for redirects in range(_MAX_REDIRECTS + 1):
+            self._validate_document_url(current, material)
+            if self.request_count >= self.config.max_requests:
+                raise TransportError("The configured ILIAS request budget was exhausted.")
+            self.request_count += 1
+            try:
+                response = self.session.request(
+                    "GET", current, timeout=self.config.timeout_seconds, verify=True,
+                    allow_redirects=False, stream=True,
+                    headers={"User-Agent": "ILIAS-Check/0.1", **(headers or {})},
+                )
+            except Exception:
+                raise TransportError("The document request failed.") from None
+            if response.status_code not in _REDIRECT_STATUS:
+                if response.status_code >= 400:
+                    response.close()
+                    raise TransportError("The document request returned an HTTP error.")
+                return response
+            location = _header(response, "Location")
+            response.close()
+            if not location or redirects == _MAX_REDIRECTS:
+                raise TransportError("Invalid document redirect.")
+            current = urljoin(current, location)
+        raise TransportError("Document redirect limit exceeded.")
+
+    def _validate_document_url(self, url: str, material: dict) -> None:
+        self._validate_origin(url)
+        from ilias_check.materials import document_reference
+        parsed = urlsplit(url)
+        query = parse_qs(parsed.query, keep_blank_values=True)
+        if material.get("document_id", "").startswith("file:"):
+            if parsed.path.endswith("goto.php"):
+                allowed = set(query) <= {"target", "client_id"} and bool(re.fullmatch(r"file_[1-9][0-9]*_download", (query.get("target") or [""])[0]))
+            elif parsed.path.endswith("ilias.php"):
+                allowed = (set(query) <= {"baseClass", "cmdClass", "cmd", "cmdNode", "ref_id", "client_id"}
+                           and query.get("cmd") == ["sendfile"] and query.get("cmdClass") == ["ilObjFileGUI"]
+                           and (query.get("baseClass") or [""])[0].lower() == "ilrepositorygui")
+            else:
+                allowed = set(query) <= {"client_id"} and bool(re.search(r"/go/file/[1-9][0-9]*/download/?$", parsed.path))
+            if not allowed:
+                raise TransportError("Repository document route has unexpected parameters.")
+        location = material["source_location"]
+        reference = document_reference(
+            url, material["title"], location["exercise_id"], location["assignment_id"],
+            location["page_url"], self.config.base_url, self.config.client_id,
+            material["association"], "support", location["section"],
+        )
+        if not reference or not reference["download_url"] or reference["document_id"] != material["document_id"] or reference["role"] != "support":
+            raise TransportError("Document redirect is not the selected source identity.")
 
     def close(self) -> None:
         close = getattr(self.session, "close", None)
@@ -212,6 +274,7 @@ class SafeTransport:
                     is_safe_repository_cmd
                     or is_safe_exercise_info
                     or is_login_force_command
+                    or (lowered == "cmd" and passive_read_route(url))
                 )
             ) or any(
                 part in lowered for part in _SENSITIVE_QUERY_PARTS

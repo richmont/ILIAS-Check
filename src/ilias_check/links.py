@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from urllib.parse import parse_qs, urlencode, urljoin, urlsplit, urlunsplit
 
 from ilias_check.transport import _has_sensitive_url_material, _origin
+from ilias_check.read_routes import passive_read_route
 
 
 _TYPE_NAMES = {
@@ -18,6 +19,7 @@ _TYPE_NAMES = {
     "lm": "learning_module",
     "learningmodule": "learning_module",
     "seq": "learning_sequence",
+    "lso": "learning_sequence",
     "sequence": "learning_sequence",
     "crs": "course",
     "course": "course",
@@ -36,6 +38,7 @@ _READ_ONLY_BASE_CLASS_COMMANDS = {
     "ilexercisehandlergui": {"infoscreen"},
 }
 _TARGET = re.compile(r"^(?P<type>[A-Za-z][A-Za-z0-9_-]*)_(?P<id>[0-9]+)$")
+_GO_PATH = re.compile(r"(?:^|/)go/(?P<type>[A-Za-z][A-Za-z0-9_-]*)/(?P<id>[0-9]+)(?P<download>/download)?/?$")
 _PATH_PAIR = re.compile(
     r"(?:^|/)goto\.php/(?P<type>[A-Za-z][A-Za-z0-9_-]*)/(?P<id>[0-9]+)(?:/|$)",
     re.IGNORECASE,
@@ -59,6 +62,11 @@ _MUTATION_QUERY_KEYS = {
     "step",
     "next",
     "previous",
+    "lsocmd",
+    "lsov",
+    "lsoni",
+    "lson",
+    "lsop",
 }
 
 
@@ -128,17 +136,31 @@ def normalize_object_link(
         return None
     if _has_sensitive_url_material(absolute):
         return None
+    installation_path = urlsplit(base_url).path.rstrip("/")
+    if installation_path and not parsed.path.startswith(installation_path + "/"):
+        return None
     query = parse_qs(parsed.query, keep_blank_values=True)
+    if any(len(set(values)) != 1 for values in query.values()):
+        return None
     base_classes = [value.lower() for value in query.get("baseClass", [])]
     base_class = base_classes[0] if len(base_classes) == 1 else ""
     read_only_cmds = _READ_ONLY_BASE_CLASS_COMMANDS.get(base_class, set())
+    # Download links are repository metadata. Canonicalize them to the file
+    # object's page; the crawler never requests these byte-serving routes.
+    file_download_link = (
+        parsed.path.rsplit("/", 1)[-1].lower() == "ilias.php"
+        and query.get("cmdClass") == ["ilObjFileGUI"]
+        and query.get("cmd") == ["sendfile"]
+        and len(query.get("ref_id", [])) == 1
+        and re.fullmatch(r"[1-9][0-9]*", query["ref_id"][0]) is not None
+    )
     if any(
         key.lower().split("[", 1)[0] in _MUTATION_QUERY_KEYS
         and not (
             parsed.path.rsplit("/", 1)[-1].lower() == "ilias.php"
             and key.lower() == "cmd"
             and len(values) == 1
-            and values[0].lower() in read_only_cmds
+            and (values[0].lower() in read_only_cmds or passive_read_route(absolute) or file_download_link)
         )
         for key, values in query.items()
     ):
@@ -146,10 +168,16 @@ def normalize_object_link(
 
     found: tuple[str, str] | None = None
     legacy_read_url: str | None = None
+    match = _GO_PATH.search(parsed.path)
+    if match and (not match.group("download") or match.group("type") == "file"):
+        found = match.group("type"), match.group("id")
     if parsed.path.lower().endswith("/goto.php") or "/goto.php/" in parsed.path.lower():
         target = parse_qs(parsed.query).get("target", [])
         if target:
-            match = _TARGET.fullmatch(target[0])
+            raw_target = target[0]
+            if re.fullmatch(r"file_[1-9][0-9]*_download", raw_target):
+                raw_target = raw_target.removesuffix("_download")
+            match = _TARGET.fullmatch(raw_target)
             if match:
                 found = match.group("type"), match.group("id")
         if found is None:
@@ -170,7 +198,18 @@ def normalize_object_link(
                 explicit_type = (
                     (query.get("obj_type") or query.get("type") or [None])[0]
                 )
-                type_code = explicit_type or _type_from_base_class(base_class)
+                controller = (query.get("cmdClass") or [""])[0].lower()
+                controller_types = {
+                    "ilobjexercisegui": "exc",
+                    "ilexsubmissionfilegui": "exc",
+                    "ilexsubmissionteamgui": "exc",
+                    "ilobjcoursegui": "crs",
+                    "ilobjfoldergui": "fold",
+                    "ilobjcategorygui": "cat",
+                    "ilobjgroupgui": "grp",
+                    "ilobjfilegui": "file",
+                }
+                type_code = explicit_type or controller_types.get(controller) or _type_from_base_class(base_class)
                 if type_code:
                     found = type_code, ref_id
                     normalized_base_class = base_class.lower()
@@ -198,6 +237,8 @@ def normalize_object_link(
                             and commands[0]
                         ):
                             read_query["cmd"] = "infoScreen"
+                        if normalized_base_class == "ilrepositorygui" and commands == ["view"]:
+                            read_query["cmd"] = "view"
                         legacy_read_url = urlunsplit(
                             (
                                 parsed.scheme,
@@ -229,6 +270,8 @@ def normalize_object_link(
 
 def _type_from_base_class(base_class: str) -> str | None:
     normalized = base_class.lower()
+    if normalized == "illmpresentationgui":
+        return "lm"
     if normalized == "ilexercisehandlergui":
         return "exc"
     if "repository" in normalized:

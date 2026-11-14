@@ -22,7 +22,7 @@ from ilias_check.activities import (
 ROOT = Path(__file__).parents[1]
 SCHEMA = json.loads((ROOT / "schemas" / "inventory-v1.schema.json").read_text())
 ACTIVITY_VALIDATOR = Draft202012Validator(
-    SCHEMA["properties"]["activities"]["items"],
+    {**SCHEMA["properties"]["activities"]["items"], "$defs": SCHEMA["$defs"]},
     format_checker=FormatChecker(),
 )
 

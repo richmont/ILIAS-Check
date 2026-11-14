@@ -85,5 +85,20 @@ Learning-sequence discovery is limited to passive content links and explicit
 passive step metadata. See [sequence compatibility](sequence-compatibility.md);
 unsupported steps remain visible as unresolved rather than being advanced.
 
+Repository discovery also supports the MCP's legacy/modern content containers,
+`button`/`a` elements with `data-action`, `/go/<type>/<id>` routes, and file
+download links as metadata references. File links are canonicalized to object
+pages and never fetched as file bodies. Platform icon metadata can resolve a
+generic legacy reference's type without guessing ownership from its title.
+
+For discovered exercises the checker additionally reads the MCP's
+`ilObjExerciseGUI` / `showOverview` route with `mode=all&from_overview=1`, then
+the exact per-unit `submissionScreen` and `submissionScreenTeam` links exposed
+by that overview. It retains their dynamic `cmdNode`, validates the exercise
+and assignment IDs, and applies the same request budget, timeout, session
+recovery, and redirect policy as other reads. The inventory includes source
+assignment labels, instructions, requirements, and submission/team metadata.
+See [MCP read compatibility](mcp-read-compatibility.md) for coverage and limits.
+
 This is an offline-first implementation milestone. A live compatibility check
 requires separate authorization and is not performed by installation or tests.

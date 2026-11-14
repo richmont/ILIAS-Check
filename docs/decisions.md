@@ -201,3 +201,18 @@ without explicit progression is the remaining material compatibility risk, not
 an authorization to alter activities. Proposed technical defaults (such as hourly
 local maintenance and a 30-minute report draft timeout) remain tunable implementation
 details, not extra remote scans or externally transmitted data.
+
+## 11. Inconclusive activities and future user feedback
+
+Keep the currently unresolved sequence steps and blank assignment details as
+unknown. Further extraction attempts are deferred while development proceeds.
+In the Telegram interface, display these cases as “Inconclusivo — precisa
+verificar”, with observation time, a brief explanation, and the original ILIAS
+link. Invite the learner to describe how the bot should display that activity,
+using the planned software-feedback dialogue and its expected/actual fields.
+
+Suggested invitation: “Esta tarefa apareceu de forma inesperada? Conte como o
+bot deveria exibi-la.” Feedback is intended to guide later display rules and
+compatibility fixes; receipt of feedback alone does not prove submission,
+completion, or non-applicability and does not change ILIAS state. The Telegram
+feedback flow is implemented in the private worker; live activation remains separate.

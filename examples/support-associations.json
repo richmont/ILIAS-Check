@@ -1,0 +1,87 @@
+{
+  "description": "Synthetic metadata-only support associations; no real course materials or downloads.",
+  "support_documents": [
+    {
+      "document_id": "file:7001",
+      "title": "Synthetisches Arbeitsblatt.pdf",
+      "association": "assignment_attachment",
+      "role": "support",
+      "source_url": "https://ilias.example.edu/goto.php?target=file_7001&client_id=academy",
+      "download_url": "https://ilias.example.edu/goto.php?target=file_7001_download",
+      "source_location": {
+        "page_url": "https://ilias.example.edu/ilias.php?baseClass=ilrepositorygui&cmdClass=ilAssignmentPresentationGUI&ref_id=444&ass_id=41",
+        "section": "Dateien",
+        "exercise_id": "444",
+        "assignment_id": "41",
+        "container_id": null,
+        "path": []
+      },
+      "state": "metadata_only",
+      "reason_codes": [],
+      "selected_for_support": true
+    },
+    {
+      "document_id": "file:7001",
+      "title": "Synthetisches Arbeitsblatt.pdf",
+      "association": "instruction_link",
+      "role": "support",
+      "source_url": "https://ilias.example.edu/goto.php?target=file_7001&client_id=academy",
+      "download_url": "https://ilias.example.edu/goto.php?target=file_7001_download",
+      "source_location": {
+        "page_url": "https://ilias.example.edu/ilias.php?baseClass=ilrepositorygui&cmdClass=ilAssignmentPresentationGUI&ref_id=444&ass_id=41",
+        "section": "Arbeitsanweisung",
+        "exercise_id": "444",
+        "assignment_id": "41",
+        "container_id": null,
+        "path": []
+      },
+      "state": "metadata_only",
+      "reason_codes": [],
+      "selected_for_support": true
+    },
+    {
+      "document_id": "file:7002",
+      "title": "Synthetische Präsentation.pdf",
+      "association": "contextual",
+      "role": "unknown",
+      "source_url": "https://ilias.example.edu/goto.php?target=file_7002&client_id=academy",
+      "download_url": null,
+      "source_location": {
+        "page_url": "https://ilias.example.edu/goto.php?target=fold_1001&client_id=academy",
+        "section": "repository_folder",
+        "exercise_id": "444",
+        "assignment_id": "41",
+        "container_id": "1001",
+        "path": []
+      },
+      "state": "unavailable",
+      "reason_codes": [
+        "document_role_unknown",
+        "download_route_unavailable",
+        "contextual_opt_in_required"
+      ],
+      "selected_for_support": false
+    },
+    {
+      "document_id": "file:7003",
+      "title": "Synthetische Musterlösung.pdf",
+      "association": "assignment_attachment",
+      "role": "model_answer",
+      "source_url": "https://ilias.example.edu/goto.php?target=file_7003&client_id=academy",
+      "download_url": "https://ilias.example.edu/goto.php?target=file_7003_download",
+      "source_location": {
+        "page_url": "https://ilias.example.edu/ilias.php?baseClass=ilrepositorygui&cmdClass=ilAssignmentPresentationGUI&ref_id=444&ass_id=41",
+        "section": "Musterlösung",
+        "exercise_id": "444",
+        "assignment_id": "41",
+        "container_id": null,
+        "path": []
+      },
+      "state": "metadata_only",
+      "reason_codes": [
+        "known_answer_material"
+      ],
+      "selected_for_support": false
+    }
+  ]
+}

@@ -79,3 +79,9 @@ class AssignmentObservation:
     url_kind: ActivityLinkKind = ActivityLinkKind.EXERCISE
     paths: tuple[tuple[str, ...], ...] = ()
     submission_history: tuple[SubmissionHistory, ...] = ()
+    instructions: str | None = None
+    requirement_text: str | None = None
+    deadline_timezone: str | None = None
+    overdue: bool | None = None
+    support_documents: tuple[dict[str, object], ...] = ()
+    support_warnings: tuple[str, ...] = ()

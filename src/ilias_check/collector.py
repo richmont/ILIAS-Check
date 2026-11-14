@@ -10,6 +10,7 @@ from ilias_check.config import CollectorConfig
 from ilias_check.inventory import build_inventory
 from ilias_check.traversal import RepositoryCrawler
 from ilias_check.transport import SafeTransport
+from ilias_check.support_cache import cache_inventory
 
 
 def collect_inventory(
@@ -20,11 +21,10 @@ def collect_inventory(
     owns_transport = transport is None
     safe_transport = transport if transport is not None else SafeTransport(config)
     try:
-        result = RepositoryCrawler(
-            config,
-            Authenticator(config=config, transport=safe_transport),
-        ).collect()
-        return build_inventory(result, config, checked_at=checked_at)
+        auth = Authenticator(config=config, transport=safe_transport)
+        result = RepositoryCrawler(config, auth).collect()
+        inventory = build_inventory(result, config, checked_at=checked_at)
+        return cache_inventory(inventory, config, auth)
     finally:
         if owns_transport:
             close = getattr(safe_transport, "close", None)

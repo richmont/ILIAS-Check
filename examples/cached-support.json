@@ -1,0 +1,31 @@
+{
+  "document_id": "file:700",
+  "title": "Synthetic worksheet.pdf",
+  "association": "assignment_attachment",
+  "role": "support",
+  "source_url": "https://ilias.example/ilias/goto.php?target=file_700&client_id=demo",
+  "download_url": "https://ilias.example/ilias/goto.php?target=file_700_download&client_id=demo",
+  "source_location": {
+    "page_url": "https://ilias.example/ilias/goto.php?target=exc_444",
+    "section": "Files",
+    "exercise_id": "444",
+    "assignment_id": "42",
+    "container_id": null,
+    "path": []
+  },
+  "state": "cached",
+  "reason_codes": [],
+  "selected_for_support": true,
+  "cache": {
+    "path": "/private/example-support/synthetic-placeholder.blob",
+    "media_type": "application/pdf",
+    "byte_size": 100,
+    "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+    "downloaded_at": "2026-11-14T00:00:00Z",
+    "last_validated_at": "2026-11-14T12:00:00Z",
+    "expires_at": "2026-11-21T00:00:00Z",
+    "expiry_reason": "no_deadline_ttl",
+    "eligible": true,
+    "warning": "Cópia local; o ILIAS é a fonte oficial e pode estar mais atualizado."
+  }
+}

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
+from urllib.parse import urlsplit
 from bs4 import BeautifulSoup, Tag
 
 from ilias_check.links import (
@@ -17,6 +18,10 @@ _CONTENT_SELECTORS = (
     "main",
     '[role="main"]',
     "#ilContentContainer",
+    "#il_center_col",
+    "#mainscrolldiv",
+    ".ilContainerContent",
+    ".ilContainerBlock",
     ".ilMainContent",
     ".ilContent",
     ".ilRepositoryList",
@@ -25,6 +30,10 @@ _CONTENT_SELECTORS = (
     ".ilContainerListItem",
     ".il_ContainerListItem",
     ".ilObjListRow",
+    "li.il-std-item",
+    "li.il-std-item-container",
+    "li.ilContainerListItemOuter",
+    "div.il-item",
     "[data-ref-id]",
 )
 _EXCLUDED_ANCESTORS = (
@@ -54,6 +63,7 @@ class ParsedPage:
     instructions: str | None = None
     links: list[ParsedLink] = field(default_factory=list)
     sequence_steps: list[ParsedLink] = field(default_factory=list)
+    sequence_outline: list[dict[str, str]] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
     sequence_resolution: str | None = None
 
@@ -69,6 +79,7 @@ def resolve_legacy_object_ref(
     if ref.read_url is None:
         return None
 
+    response_ref = None
     response_path = response_url.split("?", 1)[0].rstrip("/").rsplit("/", 1)[-1]
     if response_path.lower() in {"goto.php", "ilias.php", "repository.php"}:
         response_ref = normalize_object_link(
@@ -84,6 +95,17 @@ def resolve_legacy_object_ref(
 
     soup = BeautifulSoup(html, "html.parser")
     candidates: dict[str, ObjectRef] = {}
+    if response_ref is not None and response_ref.ref_id == ref.ref_id:
+        # The platform's header icon identifies this page, unlike child icons
+        # or navigation labels. Legacy test/folder pages keep their generic URL.
+        header_icon = soup.select_one("img#headerimage[src]")
+        if header_icon is not None:
+            basename = urlsplit(str(header_icon.get("src", ""))).path.rsplit("/", 1)[-1]
+            match = re.fullmatch(r"(?:icon|obj)_([a-z]+)\.(?:svg|png|gif)", basename, re.IGNORECASE)
+            if match:
+                candidate = object_ref_from_parts(base_url, client_id, match.group(1), ref.ref_id)
+                if candidate is not None and candidate.object_type != "unsupported":
+                    candidates[candidate.key] = candidate
     for node in soup.select("[data-ref-id][data-object-type]"):
         if not isinstance(node, Tag) or _inside_excluded_area(node):
             continue
@@ -120,35 +142,70 @@ def parse_repository_page(
         for node in soup.select(selector):
             if isinstance(node, Tag) and not any(node is parent for parent in roots):
                 roots.append(node)
+    if not roots:
+        roots.append(soup)
 
     # A recognized content root may contain nested recognized roots. De-duplicate
     # anchors by object identity while retaining source order.
     anchors: list[Tag] = []
     anchor_ids: set[int] = set()
     for root in roots:
-        for anchor in root.find_all("a", href=True):
+        for anchor in root.select("a[href], button[href], a[data-action], button[data-action]"):
             if id(anchor) not in anchor_ids and not _inside_excluded_area(anchor):
                 anchors.append(anchor)
                 anchor_ids.add(id(anchor))
 
+    current = normalize_object_link(page_url, page_url, base_url, client_id)
     for anchor in anchors:
         ref = normalize_object_link(
-            str(anchor.get("href", "")), page_url, base_url, client_id
+            str(anchor.get("href") or anchor.get("data-action") or "").strip(),
+            page_url, base_url, client_id
         )
+        if ref is not None and ref.object_type == "unresolved":
+            ref = _ref_from_icon(anchor, ref, base_url, client_id)
         if ref is None or ref.key in seen:
             continue
-        link_title = _clean_text(anchor.get_text(" ", strip=True))
+        if current is not None and current.ref_id == ref.ref_id:
+            continue
+        container = anchor.find_parent(
+            class_=lambda value: value and any(name in value for name in (
+                "ilObjListRow", "il_ContainerListItem", "ilContainerListItem",
+                "il-std-item", "il-item",
+            ))
+        ) or anchor.find_parent("tr")
+        title_node = container.select_one(
+            ".il-item-title, .il_ContainerItemTitle, h4"
+        ) if container else None
+        if title_node is not None:
+            link_title = _clean_text(title_node.get_text(" ", strip=True))
+        else:
+            link_title = ""
         if not link_title:
-            link_title = _clean_text(str(anchor.get("title", "")))
+            link_title = _clean_text(anchor.get_text(" ", strip=True))
+        if not link_title:
+            link_title = _clean_text(str(anchor.get("title") or anchor.get("aria-label") or ""))
         if not link_title:
             link_title = f"ILIAS {ref.object_type} {ref.ref_id}"
         links.append(ParsedLink(ref=ref, title=link_title))
         seen.add(ref.key)
 
     sequence_steps: list[ParsedLink] = []
+    sequence_outline: list[dict[str, str]] = []
     sequence_resolution: str | None = None
     warnings: list[str] = []
     if object_type == "learning_sequence":
+        for node in soup.select(".ilLSOLearnerView .il-workflow-step"):
+            label = node.select_one(".il-workflow-step-label")
+            if label is None:
+                continue
+            description = node.select_one(".il-workflow-step-description")
+            classes = set(node.get("class", []))
+            sequence_outline.append({
+                "title": _clean_text(label.get_text(" ", strip=True)),
+                "description": _clean_text(description.get_text(" ", strip=True)) if description else "",
+                "availability": next((state for state in ("active", "available", "unavailable") if state in classes), "unknown"),
+                "progress": next((state for state in ("not-started", "in-progress", "completed-successfully", "completed-unsuccessfully") if state in classes), "unknown"),
+            })
         for node in soup.select("[data-sequence-step][data-ref-id], [data-step-ref-id]"):
             if not isinstance(node, Tag) or _inside_excluded_area(node):
                 continue
@@ -185,6 +242,7 @@ def parse_repository_page(
         instructions=instructions,
         links=links,
         sequence_steps=sequence_steps,
+        sequence_outline=sequence_outline,
         warnings=warnings,
         sequence_resolution=sequence_resolution,
     )
@@ -222,14 +280,39 @@ def _page_instructions(soup: BeautifulSoup) -> str | None:
 
 
 def _inside_excluded_area(anchor: Tag) -> bool:
-    for selector in _EXCLUDED_ANCESTORS:
-        if anchor.parent and any(
-            element is anchor for element in anchor.parent.select(selector)
-        ):
-            return True
-        if anchor.find_parent(selector):
-            return True
-    return False
+    return any(
+        node.css.match(selector)
+        for node in (anchor, *anchor.parents)
+        if isinstance(node, Tag)
+        for selector in _EXCLUDED_ANCESTORS
+    )
+
+
+def _ref_from_icon(anchor: Tag, ref: ObjectRef, base_url: str, client_id: str) -> ObjectRef:
+    """Resolve generic legacy links from platform icons, never from activity titles."""
+    container = anchor.find_parent(["li", "tr"])
+    if container is None:
+        container = anchor.find_parent(class_=lambda value: value and any(
+            name in value for name in ("ilObjListRow", "il_ContainerListItem", "ilContainerListItem", "il-item")
+        ))
+    if container is None:
+        container = anchor.find_parent("div")
+    if container is None:
+        return ref
+    types = {"ordner": "fold", "folder": "fold", "kurs": "crs", "course": "crs",
+             "datei": "file", "file": "file", "kategorie": "cat", "category": "cat",
+             "gruppe": "grp", "group": "grp", "übung": "exc", "exercise": "exc",
+             "lernsequenz": "lso", "learning sequence": "lso", "forum": "frm",
+             "test": "tst"}
+    matches = {types[str(icon.get("alt", "")).strip().lower()]
+               for icon in container.select("img[alt]")
+               if str(icon.get("alt", "")).strip().lower() in types}
+    if len(matches) != 1:
+        return ref
+    typed = object_ref_from_parts(base_url, client_id, matches.pop(), ref.ref_id)
+    if typed is None:
+        return ref
+    return ObjectRef(typed.ref_id, typed.type_code, typed.object_type, typed.url, ref.read_url)
 
 
 def _clean_text(value: str) -> str:

@@ -3,11 +3,16 @@
 from __future__ import annotations
 
 from collections import deque
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from typing import Any
 
 from ilias_check.auth import Authenticator
 from ilias_check.config import CollectorConfig
+from ilias_check.exercises import (
+    parse_exercise_assignments, parse_submitted_files, parse_team_members, read_assignment_detail,
+    submission_acceptance,
+)
+from ilias_check.read_routes import exercise_overview_url
 from ilias_check.links import ObjectRef, canonical_object_url
 from ilias_check.parser import (
     ParsedPage,
@@ -28,8 +33,10 @@ class InventoryObject:
     paths: list[dict[str, Any]] = field(default_factory=list)
     documents: list[dict[str, str]] = field(default_factory=list)
     sequence_steps: list[dict[str, str]] = field(default_factory=list)
+    sequence_outline: list[dict[str, str]] = field(default_factory=list)
     sequence_resolution: str | None = None
     warnings: list[str] = field(default_factory=list)
+    assignments: list[dict[str, Any]] = field(default_factory=list)
 
     @property
     def key(self) -> str:
@@ -100,6 +107,12 @@ def _promote_legacy_identity(
         for step in record.sequence_steps:
             if step not in existing.sequence_steps:
                 existing.sequence_steps.append(step)
+        for step in record.sequence_outline:
+            if step not in existing.sequence_outline:
+                existing.sequence_outline.append(step)
+        for assignment in record.assignments:
+            if assignment not in existing.assignments:
+                existing.assignments.append(assignment)
         for warning in record.warnings:
             if (
                 warning != "unresolved_legacy_repository_reference"
@@ -181,6 +194,11 @@ class RepositoryCrawler:
         while queue:
             item = queue.popleft()
             ref = resolved_aliases.get(item.ref.key, item.ref)
+            if item.ref.key != ref.key and item.ref.key in objects:
+                _promote_legacy_identity(
+                    item.ref.key, ref, objects, root_object_pairs, coverage_by_root,
+                    expanded_paths, parsed_pages, fetched,
+                )
             if ref.object_type == "unresolved":
                 typed_matches = [
                     candidate
@@ -325,7 +343,10 @@ class RepositoryCrawler:
                     record.title = page.title
                     record.instructions = page.instructions
                     record.sequence_resolution = page.sequence_resolution
+                    record.sequence_outline = page.sequence_outline
                     record.warnings.extend(page.warnings)
+                    if ref.object_type == "exercise":
+                        self._read_assignments(record, page)
                     record.sequence_steps = [
                         {
                             "ref_id": step.ref.ref_id,
@@ -394,6 +415,13 @@ class RepositoryCrawler:
                     continue
 
             page = parsed_pages.get(key)
+            if any(warning.startswith("exercise_") for warning in record.warnings):
+                coverage_by_root[item.root_id].complete = False
+                coverage_by_root[item.root_id].warnings.extend(
+                    warning for warning in record.warnings
+                    if warning.startswith("exercise_")
+                    and warning not in coverage_by_root[item.root_id].warnings
+                )
             if page is None:
                 continue
             expansion_key = (item.root_id, key, item.path)
@@ -410,6 +438,7 @@ class RepositoryCrawler:
                 key=lambda link: _traversal_priority(link.ref.object_type),
             )
             for link in reversed(prioritized_links):
+                link = replace(link, ref=resolved_aliases.get(link.ref.key, link.ref))
                 child_key = link.ref.key
                 if child_key in ancestors or child_key == key:
                     warning = "cycle_detected"
@@ -470,3 +499,85 @@ class RepositoryCrawler:
                 )
 
         return TraversalResult(objects=objects, coverage=coverage, errors=errors)
+
+    def _read_assignments(self, record: InventoryObject, repository_page: ParsedPage) -> None:
+        """Use the MCP all-unit overview and only its exact passive screen links."""
+        url = exercise_overview_url(self.config.base_url, self.config.client_id, record.ref_id)
+        try:
+            response = self.authenticator.get(url)
+            response_url = getattr(response, "url", None) or url
+            overview_page = parse_repository_page(
+                response.text, response_url, self.config.base_url,
+                self.config.client_id, "exercise",
+            )
+            assignments = parse_exercise_assignments(
+                response.text, record.ref_id, response_url,
+                self.config.base_url, self.config.client_id,
+            )
+        except Exception:
+            record.warnings.append("exercise_overview_read_failed")
+            return
+        known_links = {link.ref.key for link in repository_page.links}
+        for link in overview_page.links:
+            if link.ref.key not in known_links:
+                repository_page.links.append(link)
+                known_links.add(link.ref.key)
+        if overview_page.instructions:
+            record.instructions = "\n".join(dict.fromkeys(
+                text for text in (record.instructions, overview_page.instructions) if text
+            ))
+        if not assignments:
+            record.warnings.append("exercise_assignment_units_unresolved")
+        for assignment in assignments:
+            needs_delivery_detail = assignment.delivery_type == "file_upload" and assignment.submission_url is None
+            if assignment.presentation_url is not None:
+                try:
+                    detail = self.authenticator.get(assignment.presentation_url)
+                    recognized = read_assignment_detail(
+                        assignment, detail.text, record.ref_id,
+                        getattr(detail, "url", None) or assignment.presentation_url,
+                        self.config.base_url, self.config.client_id,
+                    )
+                    if not recognized:
+                        assignment.support_warnings.append("support_detail_unavailable")
+                        if needs_delivery_detail:
+                            assignment.warnings.append("assignment_detail_unavailable")
+                except Exception:
+                    assignment.support_warnings.append("support_detail_read_failed")
+                    if needs_delivery_detail:
+                        assignment.warnings.append("assignment_detail_read_failed")
+            else:
+                assignment.support_warnings.append("support_presentation_link_unavailable")
+            for link, parser, attribute in (
+                (assignment.submission_url, parse_submitted_files, "submitted_files"),
+                (assignment.team_url, parse_team_members, "team_members"),
+            ):
+                if link is None:
+                    continue
+                try:
+                    page = self.authenticator.get(link)
+                    metadata = parser(page.text)
+                    setattr(assignment, attribute, metadata)
+                    if attribute == "submitted_files" and metadata is not None:
+                        assignment.submission_source = "submission_screen"
+                        if submission_acceptance(
+                            page.text, getattr(page, "url", None) or link,
+                            self.config.base_url, record.ref_id, assignment.ass_id,
+                        ):
+                            assignment.availability = "accepting_submissions"
+                    if attribute == "team_members" and metadata is not None:
+                        assignment.learner_team_confirmed = bool(metadata)
+                    if metadata is None:
+                        assignment.warnings.append(f"{attribute}_unrecognized")
+                except Exception:
+                    assignment.warnings.append(f"{attribute}_read_failed")
+            if (
+                assignment.delivery_type == "file_upload"
+                and assignment.submission_url is None
+                and assignment.submitted_files is None
+                and not assignment.warnings
+            ):
+                assignment.warnings.append("submission_screen_not_exposed")
+            if assignment.warnings:
+                record.warnings.append("exercise_assignment_metadata_partial")
+            record.assignments.append(asdict(assignment))
