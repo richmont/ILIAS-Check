@@ -14,6 +14,7 @@
 
 - [x] 3.1 Update inventory/collector documentation for resolved and unresolved legacy references and add a schema-validation test for the unresolved serialized record; verify the documented warning and URL behavior match the output.
 - [x] 3.2 Run the complete offline test suite and OpenSpec validation; verify modern-link behavior remains unchanged and no live credentials or network access are required.
+- [x] 3.3 Adapt the target-specific read-only login handshake with a narrow command allowlist; verify exact GET/POST routes offline and confirm authentication plus bounded root reads live without exposing inventory content.
 
 ## Workflow follow-up
 

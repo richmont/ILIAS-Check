@@ -53,6 +53,62 @@ def test_safe_get_has_timeout_tls_and_redirects_disabled() -> None:
     assert session.calls[0][2]["allow_redirects"] is False
 
 
+def test_safe_get_allows_empty_default_cmd_but_not_action_values() -> None:
+    session = FakeSession([Response()])
+    transport = SafeTransport(CONFIG, session=session)
+    transport.get(
+        "https://ilias.example.edu/ilias.php?baseClass=ilRepositoryGUI&cmd="
+    )
+    assert len(session.calls) == 1
+
+
+def test_safe_get_allows_only_force_login_command_on_login_route() -> None:
+    session = FakeSession([Response()])
+    transport = SafeTransport(CONFIG, session=session)
+    transport.get("https://ilias.example.edu/login.php?cmd=force_login")
+    assert len(session.calls) == 1
+
+    blocked = SafeTransport(CONFIG, session=FakeSession([]))
+    with pytest.raises(TransportError):
+        blocked.get("https://ilias.example.edu/ilias.php?cmd=force_login")
+
+
+def test_safe_get_allows_repository_info_screen_only() -> None:
+    session = FakeSession([Response()])
+    SafeTransport(CONFIG, session=session).get(
+        "https://ilias.example.edu/ilias.php"
+        "?baseClass=ilRepositoryGUI&cmd=infoScreen&ref_id=456"
+    )
+    assert len(session.calls) == 1
+
+
+def test_legacy_ilias_login_post_uses_narrow_allowlist() -> None:
+    session = FakeSession([Response()])
+    transport = SafeTransport(CONFIG, session=session)
+    transport.post_login(
+        "https://ilias.example.edu/ilias.php"
+        "?baseClass=ilStartupGUI&cmd=post&fallbackCmd=doStandardAuthentication",
+        {"login": "synthetic-user", "password": "synthetic-password"},
+    )
+    assert [call[0] for call in session.calls] == ["POST"]
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://ilias.example.edu/ilias.php?baseClass=ilStartupGUI&cmd=next",
+        "https://ilias.example.edu/ilias.php?baseClass=ilDashboardGUI&cmd=post&fallbackCmd=doStandardAuthentication",
+        "https://ilias.example.edu/ilias.php?baseClass=ilStartupGUI&cmd=post&fallbackCmd=leave",
+    ],
+)
+def test_unsafe_ilias_login_post_actions_never_reach_transport(url: str) -> None:
+    session = FakeSession([])
+    transport = SafeTransport(CONFIG, session=session)
+    with pytest.raises(TransportError):
+        transport.post_login(url, {"login": "synthetic-user", "password": "secret"})
+    assert session.calls == []
+
+
 @pytest.mark.parametrize(
     "url",
     [
@@ -107,7 +163,6 @@ def test_login_post_redirect_does_not_replay_credentials() -> None:
     session = FakeSession(
         [
             Response(status_code=302, headers={"Location": "/ilias.php?baseClass=ilDashboardGUI"}),
-            Response(),
         ]
     )
     transport = SafeTransport(CONFIG, session=session)
@@ -115,8 +170,8 @@ def test_login_post_redirect_does_not_replay_credentials() -> None:
         "https://ilias.example.edu/login.php?client_id=academy",
         {"username": "synthetic-user", "password": "synthetic-password"},
     )
-    assert [call[0] for call in session.calls] == ["POST", "GET"]
-    assert session.calls[1][2]["data"] is None
+    assert [call[0] for call in session.calls] == ["POST"]
+    assert session.calls[0][2]["data"]["password"] == "synthetic-password"
 
 
 def test_request_budget_counts_attempts_and_redirects() -> None:

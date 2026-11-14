@@ -124,9 +124,17 @@ def normalize_object_link(
         return None
     if _has_sensitive_url_material(absolute):
         return None
+    query = parse_qs(parsed.query, keep_blank_values=True)
+    base_classes = [value.lower() for value in query.get("baseClass", [])]
     if any(
         key.lower().split("[", 1)[0] in _MUTATION_QUERY_KEYS
-        for key in parse_qs(parsed.query, keep_blank_values=True)
+        and not (
+            parsed.path.rsplit("/", 1)[-1].lower() == "ilias.php"
+            and key.lower() == "cmd"
+            and base_classes == ["ilrepositorygui"]
+            and [value.lower() for value in values] in ([""], ["infoscreen"])
+        )
+        for key, values in query.items()
     ):
         return None
 
@@ -144,7 +152,6 @@ def normalize_object_link(
                 found = match.group("type"), match.group("id")
 
     if found is None:
-        query = parse_qs(parsed.query)
         target = (query.get("target") or [None])[0]
         if target:
             match = _TARGET.fullmatch(target)
@@ -161,18 +168,21 @@ def normalize_object_link(
                 if type_code:
                     found = type_code, ref_id
                     if not explicit_type and base_class.lower() == "ilrepositorygui":
+                        read_query = {
+                            "baseClass": "ilRepositoryGUI",
+                            "ref_id": str(int(ref_id)),
+                            "client_id": client_id,
+                        }
+                        if [value.lower() for value in query.get("cmd", [])] == [
+                            "infoscreen"
+                        ]:
+                            read_query["cmd"] = "infoScreen"
                         legacy_read_url = urlunsplit(
                             (
                                 parsed.scheme,
                                 parsed.netloc,
                                 parsed.path,
-                                urlencode(
-                                    {
-                                        "baseClass": "ilRepositoryGUI",
-                                        "ref_id": str(int(ref_id)),
-                                        "client_id": client_id,
-                                    }
-                                ),
+                                urlencode(read_query),
                                 "",
                             )
                         )

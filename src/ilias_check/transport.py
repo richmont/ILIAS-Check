@@ -19,7 +19,7 @@ class TransportError(RuntimeError):
 
 
 _READ_PATHS = {"login.php", "goto.php", "ilias.php", "repository.php"}
-_LOGIN_POST_PATHS = {"login.php", "authenticate.php", "index.php"}
+_LOGIN_POST_PATHS = {"login.php", "authenticate.php", "index.php", "ilias.php"}
 _ACTION_QUERY_KEYS = {
     "action",
     "cmd",
@@ -69,9 +69,12 @@ class SafeTransport:
 
     def post_login(self, url: str, data: dict[str, str]) -> Any:
         self._validate_login_post_url(url)
-        # Authentication POSTs are never retried; credentials are never sent
-        # to a redirect target. The redirect chain, if any, is manually checked.
-        return self._request_chain("POST", url, data=data)
+        # Never follow an authentication redirect: the authenticator performs
+        # a separate validated dashboard GET after the POST.
+        response = self._send("POST", url, data=data)
+        if getattr(response, "status_code", 200) not in _REDIRECT_STATUS:
+            _raise_http_error(response)
+        return response
 
     def _request_with_retry(self, method: str, url: str) -> Any:
         for attempt in range(_MAX_GET_ATTEMPTS):
@@ -169,10 +172,28 @@ class SafeTransport:
             or parsed.path.startswith(self._base_path + "/")
         ):
             raise TransportError("The URL is outside the configured ILIAS installation path.")
-        for key, _value in parse_qsl(parsed.query, keep_blank_values=True):
+        query = parse_qsl(parsed.query, keep_blank_values=True)
+        base_classes = [
+            value.lower() for key, value in query if key.lower() == "baseclass"
+        ]
+        for key, value in query:
             lowered = key.lower()
             action_key = lowered.split("[", 1)[0]
-            if action_key in _ACTION_QUERY_KEYS or any(
+            is_safe_repository_cmd = (
+                basename == "ilias.php"
+                and lowered == "cmd"
+                and base_classes == ["ilrepositorygui"]
+                and value.lower() in {"", "infoscreen"}
+            )
+            is_login_force_command = (
+                basename == "login.php"
+                and lowered == "cmd"
+                and value.lower() == "force_login"
+            )
+            if (
+                action_key in _ACTION_QUERY_KEYS
+                and not (is_safe_repository_cmd or is_login_force_command)
+            ) or any(
                 part in lowered for part in _SENSITIVE_QUERY_PARTS
             ):
                 raise TransportError("Action or session parameters are not allowed on reads.")
@@ -190,6 +211,16 @@ class SafeTransport:
             raise TransportError("The login action is outside the configured installation path.")
         if _has_sensitive_url_material(url):
             raise TransportError("Token-bearing login action URLs are not allowed.")
+        if basename == "ilias.php":
+            values: dict[str, list[str]] = {}
+            for key, value in parse_qsl(parsed.query, keep_blank_values=True):
+                values.setdefault(key.lower(), []).append(value.lower())
+            if values != {
+                "baseclass": ["ilstartupgui"],
+                "cmd": ["post"],
+                "fallbackcmd": ["dostandardauthentication"],
+            }:
+                raise TransportError("The ILIAS login action is not on the authentication allowlist.")
 
     def _respect_retry_after(self, response: Any) -> None:
         raw = _header(response, "Retry-After")

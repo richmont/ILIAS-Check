@@ -65,6 +65,31 @@ def test_legacy_read_url_is_rebuilt_from_validated_reference_only() -> None:
     )
 
 
+def test_normalizer_allows_empty_default_cmd_but_rejects_actions() -> None:
+    ref = normalize_object_link(
+        "/ilias.php?baseClass=ilRepositoryGUI&ref_id=456&cmd=",
+        f"{BASE}/ilias.php",
+        BASE,
+        "academy",
+    )
+    assert ref is not None and ref.ref_id == "456"
+    assert normalize_object_link(
+        "/ilias.php?baseClass=ilRepositoryGUI&ref_id=456&cmd[next]=",
+        f"{BASE}/ilias.php",
+        BASE,
+        "academy",
+    ) is None
+    assert normalize_object_link(
+        "/ilias.php?baseClass=ilRepositoryGUI&ref_id=456&cmd=infoScreen",
+        f"{BASE}/ilias.php",
+        BASE,
+        "academy",
+    ).read_url == (
+        f"{BASE}/ilias.php?baseClass=ilRepositoryGUI&ref_id=456"
+        "&client_id=academy&cmd=infoScreen"
+    )
+
+
 @pytest.mark.parametrize(
     "href",
     [

@@ -18,9 +18,19 @@ Confirmed in the current code:
 - Inventory schema v1 allows string object types and warning codes, so an
   explicit unresolved type can be represented without changing the envelope.
 
-The exact passive type signal exposed by the target ILIAS website has not been
-verified in this planning change. The design therefore uses explicit recognized
-signals when present and retains an unresolved fallback.
+Authorized live testing confirmed the target login handshake uses a bounded
+sequence of read-only redirects (`cmd=` on the repository route and
+`cmd=force_login` on `login.php`), followed by a password POST to
+`ilias.php?baseClass=ilStartupGUI&cmd=post&fallbackCmd=doStandardAuthentication`.
+The POST response redirects to a dashboard command; the client does not need to
+follow that redirect because it performs a separate dashboard GET to confirm
+the session. The transport therefore permits only the observed read commands
+and exact login POST tuple, while retaining rejection of all other action
+parameters and never replaying credentials after a POST redirect.
+
+The exact passive type signal exposed by the target's legacy repository pages
+remains unresolved in some cases. The design uses explicit recognized signals
+when present and retains an unresolved fallback.
 
 ## Goals / Non-Goals
 
@@ -98,6 +108,14 @@ Do not add an MCP runtime dependency or require a live server in automated
 tests. A live compatibility check against the primary target is a separate,
 explicitly authorized activity.
 
+### Match the observed target login handshake narrowly
+
+Allow an empty `cmd` or `cmd=infoScreen` only on the repository read route,
+`cmd=force_login` only on `login.php`, and the exact startup authentication
+tuple only for the login POST. Do not follow the login POST redirect; the
+authenticator performs its separate safe dashboard GET. Do not generalize this
+allowlist to other ILIAS action commands.
+
 ## Risks / Trade-offs
 
 - [Target response may expose no reliable type signal] → Retain the object as
@@ -106,6 +124,8 @@ explicitly authorized activity.
   identity with an alias map and test that paths and fetch counts are merged.
 - [A legacy GET or redirect may reach an unsafe route] → Reuse SafeTransport
   validation for the initial URL and every redirect; do not add a bypass.
+- [Target login relies on legacy command parameters] → Allow only the observed
+  read-only commands and exact login POST tuple; keep mutation commands denied.
 - [Inventory consumers may not recognize `type: "unresolved"`] → Keep the
   schema's existing open string type, document the warning, and add a schema
   validation test for the serialized result.

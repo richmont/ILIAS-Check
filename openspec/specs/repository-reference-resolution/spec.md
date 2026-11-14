@@ -1,11 +1,11 @@
-# Spec Delta
+# repository-reference-resolution Specification
 
 ## Purpose
 
 Resolve legacy ILIAS repository references that omit a concrete object type,
 while keeping unresolved references visible in bounded inventory results.
 
-## ADDED Requirements
+## Requirements
 
 ### Requirement: Crawl validated legacy repository references
 The collector SHALL retain a same-origin legacy repository reference with a positive `ref_id` when its repository base class is recognized but its concrete object type is absent. It SHALL use only a validated read route to inspect the referenced page and SHALL continue to enforce the configured request budget and redirect policy.
@@ -32,3 +32,18 @@ The inventory SHALL distinguish an unresolved legacy object from a confirmed emp
 #### Scenario: Legacy reference read fails
 - **WHEN** a validated legacy reference cannot be read within the existing transport and request limits
 - **THEN** the collector retains partial results, marks the affected root incomplete, and reports a sanitized object-read error
+
+### Requirement: Support the target's bounded read-only login handshake
+The transport SHALL allow only the target's observed, read-only login-navigation commands and exact password-login POST route. It SHALL continue to reject mutation commands, bracketed action parameters, sensitive URL material, off-origin redirects, and credential replay to POST redirect targets.
+
+#### Scenario: Target login navigation uses an explicit read-only command
+- **WHEN** the same-origin login flow redirects through an empty repository `cmd`, `cmd=infoScreen`, or `login.php?cmd=force_login`
+- **THEN** the transport follows only those exact allowlisted reads and applies the ordinary path, origin, redirect, and request-budget checks
+
+#### Scenario: Target password form posts to the legacy startup route
+- **WHEN** the password form posts to `ilias.php` with `baseClass=ilStartupGUI`, `cmd=post`, and `fallbackCmd=doStandardAuthentication`
+- **THEN** the transport sends one validated login POST and does not follow its redirect; authentication then verifies the session with a separate safe dashboard GET
+
+#### Scenario: Other ILIAS action parameters remain blocked
+- **WHEN** a read URL contains a bracketed command such as `cmd[next]`, or a non-allowlisted action command
+- **THEN** the request is rejected before reaching the HTTP session
