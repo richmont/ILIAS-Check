@@ -82,6 +82,30 @@ def test_safe_get_allows_repository_info_screen_only() -> None:
     assert len(session.calls) == 1
 
 
+def test_safe_get_allows_only_exercise_handler_info_screen() -> None:
+    session = FakeSession([Response()])
+    SafeTransport(CONFIG, session=session).get(
+        "https://ilias.example.edu/ilias.php"
+        "?baseClass=ilExerciseHandlerGUI&ref_id=789&cmd=infoScreen"
+    )
+    assert len(session.calls) == 1
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://ilias.example.edu/ilias.php?baseClass=ilExerciseHandlerGUI&ref_id=789&cmd=post",
+        "https://ilias.example.edu/ilias.php?baseClass=ilExerciseHandlerGUI&ref_id=789&cmd[next]=",
+        "https://ilias.example.edu/ilias.php?baseClass=ilExerciseHandlerGUI&ref_id=789&cmd=infoScreen&cmdClass=ilObjExerciseGUI",
+    ],
+)
+def test_safe_get_rejects_non_allowlisted_exercise_commands(url: str) -> None:
+    session = FakeSession([])
+    with pytest.raises(TransportError):
+        SafeTransport(CONFIG, session=session).get(url)
+    assert session.calls == []
+
+
 def test_legacy_ilias_login_post_uses_narrow_allowlist() -> None:
     session = FakeSession([Response()])
     transport = SafeTransport(CONFIG, session=session)

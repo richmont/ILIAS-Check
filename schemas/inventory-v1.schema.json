@@ -22,7 +22,11 @@
     },
     "scope": {
       "type": "object",
-      "required": ["base_url", "client_id", "root_ids"],
+      "required": [
+        "base_url",
+        "client_id",
+        "root_ids"
+      ],
       "properties": {
         "base_url": {
           "type": "string",
@@ -81,7 +85,10 @@
           },
           "error": {
             "type": "object",
-            "required": ["category", "object_id"],
+            "required": [
+              "category",
+              "object_id"
+            ],
             "properties": {
               "category": {
                 "type": "string"
@@ -131,13 +138,19 @@
             "type": "string"
           },
           "instructions": {
-            "type": ["string", "null"]
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "paths": {
             "type": "array",
             "items": {
               "type": "object",
-              "required": ["root_id", "path"],
+              "required": [
+                "root_id",
+                "path"
+              ],
               "properties": {
                 "root_id": {
                   "type": "string",
@@ -159,13 +172,212 @@
             "pattern": "^https://"
           },
           "url_kind": {
-            "enum": ["activity", "sequence_entry"]
+            "enum": [
+              "activity",
+              "sequence_entry"
+            ]
+          },
+          "assignments": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "ass_id",
+                "title",
+                "deadline",
+                "status",
+                "instructions",
+                "requirement",
+                "delivery_type",
+                "submission_url",
+                "team_url",
+                "submitted_files",
+                "team_members",
+                "warnings"
+              ],
+              "properties": {
+                "ass_id": {
+                  "type": "string",
+                  "pattern": "^[1-9][0-9]*$"
+                },
+                "title": {
+                  "type": "string"
+                },
+                "deadline": {
+                  "type": "string"
+                },
+                "status": {
+                  "type": "string"
+                },
+                "instructions": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "requirement": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "delivery_type": {
+                  "enum": [
+                    "file_upload",
+                    "text",
+                    "other",
+                    "unknown"
+                  ]
+                },
+                "availability": {
+                  "enum": [
+                    "accepting_submissions",
+                    "closed",
+                    "not_yet_open",
+                    "unknown"
+                  ]
+                },
+                "submission_source": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "submission_scope": {
+                  "enum": [
+                    "personal",
+                    "team",
+                    "unknown"
+                  ]
+                },
+                "learner_team_confirmed": {
+                  "type": [
+                    "boolean",
+                    "null"
+                  ]
+                },
+                "applicability": {
+                  "enum": [
+                    "applicable",
+                    "not_applicable",
+                    "unknown"
+                  ]
+                },
+                "contradictory": {
+                  "type": "boolean"
+                },
+                "support_documents": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/$defs/supportDocument"
+                  }
+                },
+                "support_warnings": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  },
+                  "uniqueItems": true
+                },
+                "support_detail_complete": {
+                  "type": "boolean"
+                },
+                "presentation_url": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "format": "uri",
+                  "pattern": "^https://"
+                },
+                "submission_url": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "format": "uri",
+                  "pattern": "^https://"
+                },
+                "team_url": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "format": "uri",
+                  "pattern": "^https://"
+                },
+                "submitted_files": {
+                  "type": [
+                    "array",
+                    "null"
+                  ],
+                  "items": {
+                    "type": "object",
+                    "required": [
+                      "delivery_id",
+                      "filename",
+                      "submitter",
+                      "date"
+                    ],
+                    "properties": {
+                      "delivery_id": {
+                        "type": "string"
+                      },
+                      "filename": {
+                        "type": "string"
+                      },
+                      "submitter": {
+                        "type": "string"
+                      },
+                      "date": {
+                        "type": "string"
+                      }
+                    },
+                    "additionalProperties": false
+                  }
+                },
+                "team_members": {
+                  "type": [
+                    "array",
+                    "null"
+                  ],
+                  "items": {
+                    "type": "object",
+                    "required": [
+                      "user_id",
+                      "name"
+                    ],
+                    "properties": {
+                      "user_id": {
+                        "type": "string"
+                      },
+                      "name": {
+                        "type": "string"
+                      }
+                    },
+                    "additionalProperties": false
+                  }
+                },
+                "warnings": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  },
+                  "uniqueItems": true
+                }
+              },
+              "additionalProperties": false
+            }
           },
           "documents": {
             "type": "array",
             "items": {
               "type": "object",
-              "required": ["ref_id", "title", "url"],
+              "required": [
+                "ref_id",
+                "title",
+                "url"
+              ],
               "properties": {
                 "ref_id": {
                   "type": "string",
@@ -183,15 +395,66 @@
               "additionalProperties": false
             }
           },
+          "sequence_outline": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "title",
+                "description",
+                "availability",
+                "progress"
+              ],
+              "properties": {
+                "title": {
+                  "type": "string"
+                },
+                "description": {
+                  "type": "string"
+                },
+                "availability": {
+                  "enum": [
+                    "active",
+                    "available",
+                    "unavailable",
+                    "unknown"
+                  ]
+                },
+                "progress": {
+                  "enum": [
+                    "not-started",
+                    "in-progress",
+                    "completed-successfully",
+                    "completed-unsuccessfully",
+                    "unknown"
+                  ]
+                }
+              },
+              "additionalProperties": false
+            }
+          },
           "sequence_resolution": {
-            "type": ["string", "null"],
-            "enum": ["resolved", "unresolved", null]
+            "type": [
+              "string",
+              "null"
+            ],
+            "enum": [
+              "resolved",
+              "unresolved",
+              null
+            ]
           },
           "sequence_steps": {
             "type": "array",
             "items": {
               "type": "object",
-              "required": ["ref_id", "type", "title", "url", "url_kind"],
+              "required": [
+                "ref_id",
+                "type",
+                "title",
+                "url",
+                "url_kind"
+              ],
               "properties": {
                 "ref_id": {
                   "type": "string",
@@ -209,7 +472,10 @@
                   "pattern": "^https://"
                 },
                 "url_kind": {
-                  "enum": ["activity", "sequence_entry"]
+                  "enum": [
+                    "activity",
+                    "sequence_entry"
+                  ]
                 }
               },
               "additionalProperties": false
@@ -226,11 +492,367 @@
         "additionalProperties": false
       }
     },
+    "activities": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "exercise_id",
+          "assignment_id",
+          "title",
+          "submission_type",
+          "applicability",
+          "availability",
+          "status",
+          "reason_codes",
+          "evidence",
+          "deadline_text",
+          "deadline_at",
+          "url",
+          "url_kind",
+          "paths",
+          "submission_history"
+        ],
+        "properties": {
+          "exercise_id": {
+            "type": "string",
+            "pattern": "^[1-9][0-9]*$"
+          },
+          "assignment_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "pattern": "^[1-9][0-9]*$"
+          },
+          "title": {
+            "type": "string"
+          },
+          "submission_type": {
+            "enum": [
+              "file_upload",
+              "text",
+              "other",
+              "unknown"
+            ]
+          },
+          "applicability": {
+            "enum": [
+              "applicable",
+              "not_applicable",
+              "unknown"
+            ]
+          },
+          "availability": {
+            "enum": [
+              "accepting_submissions",
+              "not_yet_open",
+              "closed",
+              "unknown"
+            ]
+          },
+          "status": {
+            "enum": [
+              "pending",
+              "submitted",
+              "closed_without_submission",
+              "not_yet_open",
+              "excluded",
+              "unknown"
+            ]
+          },
+          "reason_codes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "uniqueItems": true
+          },
+          "evidence": {
+            "type": "object",
+            "properties": {
+              "submission_scope": {
+                "enum": [
+                  "personal",
+                  "team",
+                  "unknown"
+                ]
+              },
+              "learner_team_confirmed": {
+                "type": [
+                  "boolean",
+                  "null"
+                ]
+              },
+              "explicitly_excluded": {
+                "type": "boolean"
+              },
+              "contradictory_evidence": {
+                "type": "boolean"
+              },
+              "deadline_resolution": {
+                "type": "string"
+              },
+              "sequence_resolution": {
+                "type": "string"
+              },
+              "delivery_confirmed": {
+                "type": [
+                  "boolean",
+                  "null"
+                ]
+              },
+              "acceptance_confirmed": {
+                "type": [
+                  "boolean",
+                  "null"
+                ]
+              },
+              "submission_present": {
+                "type": [
+                  "boolean",
+                  "null"
+                ]
+              },
+              "applicability_source": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "submission_source": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "additionalProperties": false
+          },
+          "deadline_text": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "instructions": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "requirement_text": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "deadline_timezone": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "overdue": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "support_documents": {
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/supportDocument"
+            }
+          },
+          "support_warnings": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "uniqueItems": true
+          },
+          "deadline_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "url": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uri",
+            "pattern": "^https://"
+          },
+          "url_kind": {
+            "enum": [
+              "assignment",
+              "exercise",
+              "sequence_entry"
+            ]
+          },
+          "paths": {
+            "type": "array",
+            "items": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          },
+          "submission_history": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "submitted_at",
+                "attachment_present",
+                "attachment_count",
+                "scope",
+                "approved",
+                "completed"
+              ],
+              "properties": {
+                "submitted_at": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "format": "date-time"
+                },
+                "attachment_present": {
+                  "type": [
+                    "boolean",
+                    "null"
+                  ]
+                },
+                "attachment_count": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "minimum": 0
+                },
+                "scope": {
+                  "enum": [
+                    "personal",
+                    "team",
+                    "unknown"
+                  ]
+                },
+                "approved": {
+                  "type": [
+                    "boolean",
+                    "null"
+                  ]
+                },
+                "completed": {
+                  "type": [
+                    "boolean",
+                    "null"
+                  ]
+                }
+              },
+              "additionalProperties": false
+            }
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "classification": {
+      "type": "object",
+      "required": [
+        "complete",
+        "all_clear",
+        "counts",
+        "warnings",
+        "selection",
+        "returned_count"
+      ],
+      "properties": {
+        "complete": {
+          "type": "boolean"
+        },
+        "all_clear": {
+          "type": "boolean"
+        },
+        "selection": {
+          "enum": [
+            "all",
+            "pending",
+            "submitted",
+            "closed-without-submission",
+            "needs-verification",
+            "not-yet-open",
+            "excluded"
+          ]
+        },
+        "returned_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "warnings": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "uniqueItems": true
+        },
+        "counts": {
+          "type": "object",
+          "required": [
+            "pending",
+            "submitted",
+            "closed_without_submission",
+            "not_yet_open",
+            "excluded",
+            "unknown"
+          ],
+          "properties": {
+            "pending": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "submitted": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "closed_without_submission": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "not_yet_open": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "excluded": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "unknown": {
+              "type": "integer",
+              "minimum": 0
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
     "errors": {
       "type": "array",
       "items": {
         "type": "object",
-        "required": ["category", "root_id", "object_id", "message"],
+        "required": [
+          "category",
+          "root_id",
+          "object_id",
+          "message"
+        ],
         "properties": {
           "category": {
             "type": "string"
@@ -249,6 +871,233 @@
         },
         "additionalProperties": false
       }
+    },
+    "support_cache": {
+      "type": "object",
+      "required": [
+        "usage_bytes",
+        "quota_bytes",
+        "checked_at",
+        "downloaded_bytes"
+      ],
+      "properties": {
+        "usage_bytes": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "quota_bytes": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "checked_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "downloaded_bytes": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "error": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "$defs": {
+    "supportDocument": {
+      "type": "object",
+      "required": [
+        "document_id",
+        "title",
+        "association",
+        "role",
+        "source_url",
+        "download_url",
+        "source_location",
+        "state",
+        "reason_codes",
+        "selected_for_support"
+      ],
+      "properties": {
+        "document_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "minLength": 1
+        },
+        "title": {
+          "type": "string"
+        },
+        "association": {
+          "enum": [
+            "assignment_attachment",
+            "instruction_link",
+            "contextual"
+          ]
+        },
+        "role": {
+          "enum": [
+            "support",
+            "model_answer",
+            "feedback",
+            "learner_submission",
+            "unknown"
+          ]
+        },
+        "source_url": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "uri",
+          "pattern": "^https://"
+        },
+        "download_url": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "uri",
+          "pattern": "^https://"
+        },
+        "source_location": {
+          "type": "object",
+          "required": [
+            "page_url",
+            "section",
+            "exercise_id",
+            "assignment_id",
+            "container_id",
+            "path"
+          ],
+          "properties": {
+            "page_url": {
+              "type": "string",
+              "format": "uri",
+              "pattern": "^https://"
+            },
+            "section": {
+              "type": "string"
+            },
+            "exercise_id": {
+              "type": "string",
+              "pattern": "^[1-9][0-9]*$"
+            },
+            "assignment_id": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "pattern": "^[1-9][0-9]*$"
+            },
+            "container_id": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "pattern": "^[1-9][0-9]*$"
+            },
+            "path": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          },
+          "additionalProperties": false
+        },
+        "state": {
+          "enum": [
+            "metadata_only",
+            "unavailable",
+            "cached",
+            "unchanged",
+            "stale",
+            "expired",
+            "evicted",
+            "skipped",
+            "error"
+          ]
+        },
+        "reason_codes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "uniqueItems": true
+        },
+        "selected_for_support": {
+          "type": "boolean"
+        },
+        "cache": {
+          "type": "object",
+          "required": [
+            "path",
+            "media_type",
+            "byte_size",
+            "sha256",
+            "downloaded_at",
+            "last_validated_at",
+            "expires_at",
+            "expiry_reason",
+            "eligible",
+            "warning"
+          ],
+          "properties": {
+            "path": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "media_type": {
+              "type": "string"
+            },
+            "byte_size": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "sha256": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            "downloaded_at": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "last_validated_at": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "expires_at": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "format": "date-time"
+            },
+            "expiry_reason": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "eligible": {
+              "type": "boolean"
+            },
+            "warning": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
     }
   },
   "additionalProperties": false

@@ -1,12 +1,21 @@
 # Learning-sequence discovery boundary
 
-## Offline investigation result
+## Initial offline investigation
 
 The repository contains synthetic HTML fixtures only; it has no captured,
 anonymized ILIAS sequence pages or documented installation-specific step API.
 No live ILIAS request was made for this implementation. Therefore this result
 describes supported passive evidence, not a claim that every ILIAS 9_23 sequence
 layout is understood.
+
+A subsequent authorized live test using the checker directly identified the
+installation's `lso` type and a read page containing `.ilLSOLearnerView`
+workflow entries. The parser now preserves their original step titles,
+descriptions, availability and progress states in `sequence_outline`. In the
+observed layout the controls point to `#`; there are no passive child-reference
+IDs to resolve. These sequences remain explicitly unresolved for activity
+classification. The checker does not enter the player, change steps, or infer
+delivery from the outline. See [live check results](live-check.md).
 
 The parser can discover a sequence child only when the read page exposes one of:
 

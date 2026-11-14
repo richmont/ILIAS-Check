@@ -21,6 +21,8 @@ class AuthTransport(Protocol):
 
     def post_login(self, url: str, data: dict[str, str]) -> Any: ...
 
+    def stream_document(self, material: dict, headers: dict | None = None) -> Any: ...
+
 
 @dataclass(slots=True)
 class Authenticator:
@@ -99,6 +101,35 @@ class Authenticator:
             self._authenticated = False
             raise AuthError("The ILIAS session expired again after one recovery attempt.")
         return response
+
+    def stream_document(self, material: dict, headers: dict | None = None) -> Any:
+        if not self._authenticated:
+            self.login()
+        for attempt in range(2):
+            response = self.transport.stream_document(material, headers)
+            content_type = response.headers.get("Content-Type", "").lower()
+            if "html" not in content_type:
+                return response
+            try:
+                prefix = bytearray()
+                from ilias_check.support_cache import _chunks
+                import time
+                started = time.monotonic()
+                for chunk in _chunks(response):
+                    if time.monotonic() - started > self.config.timeout_seconds:
+                        raise AuthError("Document recovery timed out.")
+                    prefix.extend(chunk)
+                    if len(prefix) >= 65536:
+                        break
+                expired = self._looks_like_login_page(bytes(prefix).decode("utf-8", "replace"))
+            finally:
+                response.close()
+            if expired and attempt == 0:
+                self._authenticated = False
+                self.login()
+                continue
+            raise AuthError("Document returned HTML or an expired session.")
+        raise AuthError("Document session recovery failed.")
 
     @staticmethod
     def _is_expired_session(response: Any) -> bool:
