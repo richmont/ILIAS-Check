@@ -1,0 +1,68 @@
+schema: spec-driven
+
+context: |
+  Language: en
+  All artifacts must be written in en.
+  Keep OpenSpec structural headings and SHALL/MUST keywords in English.
+  Project: ILIAS-Check, a Python monitor for authorized personal ILIAS access.
+  Current repository contains only README, AGPL-3.0 license, and gitignore;
+  there is no application code or test suite yet.
+  Goal: discover outstanding file-upload assignments below user-selected roots,
+  export JSON, cache support documents, and provide alerts and authorized
+  read/download commands via Telegram.
+  Target initial compatibility: ILIAS 9_23; other deployments are not guaranteed.
+  Keep collection independent of MCP transport, Telegram, and scheduling.
+  Remote operations are read-only except login/session maintenance.
+  Never submit answers, change membership, or mark learning steps complete.
+  Normal reads may generate platform access logs; do not promise invisible reads.
+  The software runs independently of AI: no LLM or translation service dependency.
+  Bot-owned menus/messages use Portuguese; ILIAS titles/instructions stay original.
+  Failures and unsupported pages must remain distinguishable from no pending work.
+  Do not include credentials, real student data, or course documents in Git.
+  Reuse of MIT-licensed ilias-mcp code is permitted if notices are preserved;
+  reuse is limited to needed authentication and useful utilities, with provenance;
+  do not import the entire MCP or extend copied MIT scope without explicit need.
+  Scope the MVP to one configured account and installation per invocation.
+  Implement in order: collector, pending classification, support documents,
+  then scheduled monitoring, then the interactive Telegram bot.
+  Cache capacity is host-controlled, initially 200000000 bytes; no bot quota edit
+  or manual cleanup command. Cleanup is automatic, confined to managed cache files.
+  Expire support associations at deadline or confirmed submission/completion;
+  no-deadline default is seven days, with retention configurable in bot settings.
+  Preserve submission history metadata, not copies of learner answers.
+  These are proposals, not shipped features.
+
+rules:
+  proposal:
+    - State dependencies and explicit non-goals.
+  specs:
+    - Use observable SHALL requirements and concrete WHEN/THEN scenarios.
+    - Cover partial failures, privacy, and read-only access where relevant.
+  design:
+    - Separate confirmed evidence from assumptions and unresolved questions.
+    - Prefer fixture-based tests; live access requires explicit authorization.
+  tasks:
+    - Leave implementation tasks unchecked until implemented and verified.
+    - Include tests, error behavior, and documentation.
+
+# Per-artifact rules (optional)
+# Add custom rules for specific artifacts.
+# Example:
+#   rules:
+#     proposal:
+#       - Keep proposals under 500 words
+#       - Always state what is out of scope
+#     tasks:
+#       - Break tasks into chunks of max 2 hours
+
+# Per-operation guidance (optional)
+# Add advisory guidance for how apply and archive work should be conducted.
+# This is separate from artifact rules above.
+# Example:
+#   operations:
+#     apply:
+#       guidance:
+#         - Keep test summaries concise
+#     archive:
+#       guidance:
+#         - Summarize the archive outcome before finishing
