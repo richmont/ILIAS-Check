@@ -49,3 +49,14 @@ Depends on the four preceding changes. Implemented and verified offline; no live
 ## Verification evidence
 
 See `docs/telegram.md` and `tests/test_monitor_bot.py`: private authorization, cursor/replay, pagination, preferences, inconclusive views, selected-material consent, fresh checks and redacted report export are covered using fake transports. No worker or external send was activated.
+
+## Review and closure — 2026-11-14
+
+Implementation and regression evidence were reviewed before archival. See
+`docs/reviews/2026-11-14-openspec-implementation.md` for the cross-feature review
+and corrections. All 408 offline tests pass. Capability deltas are synchronized
+into the main specifications; no implementation task remains unchecked.
+
+Live Telegram tests, document transmission and worker/cron activation remain
+separate authorization-dependent operations, tracked in
+`docs/deployment-checklist.md`. Archival does not perform or authorize them.

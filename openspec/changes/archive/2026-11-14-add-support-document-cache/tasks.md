@@ -39,3 +39,14 @@ Depends on: `add-read-only-collector` and `add-pending-assignment-classification
 ## Verification evidence
 
 See `docs/support-cache.md`, `docs/live-check.md`, and `tests/test_support_cache.py`: private storage, transfer validation, checksums, retention, quota, reader locks and repeated collection are covered. Two real local scans cached eleven references then reused all bodies with zero new download bytes.
+
+## Review and closure — 2026-11-14
+
+Implementation and regression evidence were reviewed before archival. See
+`docs/reviews/2026-11-14-openspec-implementation.md` for the cross-feature review
+and corrections. All 408 offline tests pass. Capability deltas are synchronized
+into the main specifications; no implementation task remains unchecked.
+
+Live Telegram tests, document transmission and worker/cron activation remain
+separate authorization-dependent operations, tracked in
+`docs/deployment-checklist.md`. Archival does not perform or authorize them.

@@ -5,8 +5,10 @@ context: |
   All artifacts must be written in en.
   Keep OpenSpec structural headings and SHALL/MUST keywords in English.
   Project: ILIAS-Check, a Python monitor for authorized personal ILIAS access.
-  Current repository contains only README, AGPL-3.0 license, and gitignore;
-  there is no application code or test suite yet.
+  Implemented Python package: read-only collector, per-unit classification,
+  private support cache, one-shot monitor, and authorized Telegram worker.
+  Offline regressions and local ILIAS reads are verified; Telegram live delivery
+  and worker/cron activation remain separate operational authorization steps.
   Goal: discover outstanding file-upload assignments below user-selected roots,
   export JSON, cache support documents, and provide alerts and authorized
   read/download commands via Telegram.
@@ -30,7 +32,10 @@ context: |
   Expire support associations at deadline or confirmed submission/completion;
   no-deadline default is seven days, with retention configurable in bot settings.
   Preserve submission history metadata, not copies of learner answers.
-  These are proposals, not shipped features.
+  Preserve four known inconclusive activities (three sequences and one blank
+  assignment detail) as unknown; further interpretation awaits user feedback.
+  Completed implementation changes are synced into main specs and archived;
+  archiving does not authorize any real Telegram send or service activation.
 
 rules:
   proposal:

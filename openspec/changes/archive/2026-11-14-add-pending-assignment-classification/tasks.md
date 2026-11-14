@@ -31,3 +31,14 @@ Depends on: `add-read-only-collector`.
 
 - Review classification fixtures and state semantics before starting document selection.
 - Archive only after implementation, tests, and review; no live checks are authorized by this task list.
+
+## Review and closure — 2026-11-14
+
+Implementation and regression evidence were reviewed before archival. See
+`docs/reviews/2026-11-14-openspec-implementation.md` for the cross-feature review
+and corrections. All 408 offline tests pass. Capability deltas are synchronized
+into the main specifications; no implementation task remains unchecked.
+
+Live Telegram tests, document transmission and worker/cron activation remain
+separate authorization-dependent operations, tracked in
+`docs/deployment-checklist.md`. Archival does not perform or authorize them.

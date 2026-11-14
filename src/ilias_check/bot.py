@@ -199,6 +199,8 @@ class Bot:
             self.client.message("Uma verificação de materiais já foi feita recentemente. Aguarde cinco minutos e consulte o ILIAS.")
             return
         self.last_check = now
+        previous = self.state.db.execute("SELECT activity FROM observations WHERE id=?", (aid,)).fetchone()
+        activity = json.loads(previous["activity"]) if previous else None
         try:
             with self.state.run_lock():
                 self.state.set_cursor("support_check_at", int(now.timestamp()))
@@ -212,7 +214,7 @@ class Bot:
                     raise CacheError("Eligibility not confirmed.")
                 self.retrieve(config, inventory, activity, material)
         except Exception:
-            self.client.message("Não foi possível confirmar uma cópia elegível agora. Consulte o ILIAS e /verificar; nenhum estado da atividade foi alterado.")
+            self.client.message("Não foi possível confirmar uma cópia elegível agora. Consulte o ILIAS e /verificar; nenhum estado da atividade foi alterado.", source_buttons(activity) if activity else [])
 
     def _retrieve(self, config, inventory, activity, material):
         for a in inventory["activities"]:

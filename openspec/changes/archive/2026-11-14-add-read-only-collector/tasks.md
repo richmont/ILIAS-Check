@@ -33,3 +33,14 @@ Depends on: none. Implement this change before the other three.
 
 - Review the collector contract before starting `add-pending-assignment-classification`.
 - Perform any live smoke test only after explicit authorization; archive this change only after implementation and verification.
+
+## Review and closure — 2026-11-14
+
+Implementation and regression evidence were reviewed before archival. See
+`docs/reviews/2026-11-14-openspec-implementation.md` for the cross-feature review
+and corrections. All 408 offline tests pass. Capability deltas are synchronized
+into the main specifications; no implementation task remains unchecked.
+
+Live Telegram tests, document transmission and worker/cron activation remain
+separate authorization-dependent operations, tracked in
+`docs/deployment-checklist.md`. Archival does not perform or authorize them.

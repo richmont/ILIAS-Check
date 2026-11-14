@@ -30,8 +30,10 @@ def maintain(config, clock):
 def dispatch(state, config, telegram, client, now, clock):
     sent = 0
     snapshot = state.snapshot() or {}
-    incomplete = any(not c["complete"] for c in snapshot.get("coverage", [])) or not snapshot.get("classification", {}).get("complete", False)
+    incomplete = not snapshot.get("observation_complete", False) or any(not c["complete"] for c in snapshot.get("coverage", [])) or not snapshot.get("classification", {}).get("complete", False)
     for component in state.due(now):
+        if not state.dispatchable(component, clock()):
+            continue
         observation = state.db.execute("SELECT * FROM observations WHERE id=?", (component["activity_id"],)).fetchone()
         activity = json.loads(observation["activity"]) if observation else None
         try:
@@ -40,10 +42,14 @@ def dispatch(state, config, telegram, client, now, clock):
                     result = client.message(activity_message(activity, observation["checked_at"], incomplete), source_buttons(activity))
                 else:
                     unknown = [a for a in snapshot.get("activities", []) if a["status"] == "unknown"]
-                    details = "\n".join(a["title"][:180] for a in unknown[:6])
+                    missing = [json.loads(row["activity"]) for row in state.db.execute(
+                        "SELECT activity FROM observations WHERE current=0 AND confirmed='pending' ORDER BY id LIMIT 6")]
+                    candidates = list({(a["exercise_id"], a["assignment_id"]): a for a in unknown + missing}.values())[:6]
+                    details = "\n".join(a["title"][:180] for a in candidates)
+                    buttons = [row for a in candidates for row in source_buttons(a)]
                     result = client.message("Verificação incompleta. Inconclusivo — precisa verificar.\n"
                                             f"Observado em: {snapshot.get('checked_at', 'não confirmado')}\n{details}\n"
-                                            "Use /verificar e /relatar para descrever como espera que o bot exiba essas atividades. O feedback não altera a situação no ILIAS.")
+                                            "Use /verificar e /relatar para descrever como espera que o bot exiba essas atividades. O feedback não altera a situação no ILIAS.", buttons)
             else:
                 material = next((d for d in activity.get("support_documents", []) if d.get("document_id") == component["document_id"] and d.get("selected_for_support") and d.get("role") == "support"), None)
                 if not telegram.send_documents or material is None:

@@ -513,3 +513,75 @@ def test_cli_monitor_dry_run_and_bot_validation(config, tmp_path, monkeypatch, c
     assert json.loads(capsys.readouterr().out)["dry_run"]
     assert cli.main(["bot", "--env-file", str(env)]) == 1
     assert "allowed user ID" in capsys.readouterr().err
+
+
+def test_deadline_change_does_not_also_enqueue_due_old_reminder(config, telegram):
+    with MonitorState(config, telegram.state_dir).open() as state:
+        state.observe(inventory(), NOW, reminder_hours=24)
+        state.acknowledged(state.due(NOW)[0], 1, NOW)
+        later = NOW + timedelta(days=2)
+        state.observe(inventory(now=later, deadline=stamp(later + timedelta(days=1))), later, reminder_hours=24)
+        due = state.due(later)
+        assert len(due) == 1 and due[0]["event_kind"] == "pending"
+        assert state.db.execute("SELECT notified_at FROM observations").fetchone()[0] is None
+
+
+def test_inconclusive_health_notification_offers_original_source_button(config, telegram):
+    client = Client()
+    run_monitor(config, telegram, collector=lambda c: inventory("unknown"), client=client, clock=lambda: NOW)
+    assert len(client.messages) == 1
+    assert client.messages[0][1][0][0]["url"] == inventory()["activities"][0]["url"]
+
+
+def test_pending_notice_discloses_missing_historical_pending_observation(config, telegram):
+    with MonitorState(config, telegram.state_dir).open() as state:
+        state.observe(inventory(), NOW)
+        state.acknowledged(state.due(NOW)[0], 1, NOW)
+    later = NOW + timedelta(hours=1)
+    client = Client()
+    run_monitor(config, telegram, collector=lambda c: inventory(now=later, ass="3"), client=client, clock=lambda: later)
+    pending = next(text for text, _ in client.messages if text.startswith("Pendente"))
+    assert "incompleta" in pending
+
+
+def test_slow_dispatch_pauses_components_after_current_evidence_expires(config, telegram):
+    from ilias_check.monitor import dispatch
+    now = [NOW]
+    class SlowClient(Client):
+        def message(self, text, buttons=None):
+            result = super().message(text, buttons)
+            now[0] += timedelta(minutes=16)
+            return result
+    data = inventory()
+    data["activities"].append(inventory(ass="3")["activities"][0])
+    with MonitorState(config, telegram.state_dir).open() as state:
+        state.observe(data, NOW)
+        client = SlowClient()
+        dispatch(state, config, telegram, client, NOW, lambda: now[0])
+        assert len(client.messages) == 1
+        assert not state.due(now[0])
+        assert state.db.execute("SELECT COUNT(*) FROM components WHERE state='paused'").fetchone()[0] == 1
+
+
+def test_failed_interactive_material_request_keeps_source_navigation(config, telegram):
+    data = inventory()
+    data["activities"][0]["support_documents"] = [{"document_id": "file:9", "title": "Blatt.pdf", "selected_for_support": True, "role": "support", "state": "metadata_only"}]
+    def broken(c):
+        raise RuntimeError("source currently unavailable")
+    with MonitorState(config, telegram.state_dir).open() as state:
+        state.observe(data, NOW)
+        client = Client()
+        bot = Bot(config, telegram, state, client, lambda: NOW, broken)
+        bot.handle(update("/materiais"))
+        token = client.messages[-1][1][0][0]["callback_data"]
+        bot.handle(update(uid=2, callback=token))
+        assert client.messages[-1][1][0][0]["url"] == data["activities"][0]["url"]
+
+
+def test_actionable_message_explains_pending_reason_and_contextual_support():
+    activity = inventory()["activities"][0]
+    activity["reason_codes"] = ["accepting_without_submission"]
+    activity["support_documents"] = [{"title": "Unterlagen.pdf", "role": "support", "state": "cached", "association": "contextual"}]
+    text = activity_message(activity, stamp(NOW))
+    assert "aceita arquivos e não há entrega confirmada" in text
+    assert "Unterlagen.pdf (contextual; cópia disponível)" in text

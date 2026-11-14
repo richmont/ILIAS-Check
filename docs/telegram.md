@@ -78,6 +78,12 @@ a separate history view; it does not imply assessment/approval. No learner answe
 are fetched. Cache maintenance runs even after remote failures and never invents a
 submission to justify cleanup.
 
+A changed generation starts its own reminder clock; an old reminder is not added
+to a deadline/support change alert. Before every component dispatch, including later
+items in a slow batch, generation, retry state and evidence freshness are checked
+again. Evidence older than fifteen minutes pauses pending sends until a fresh check.
+Qualified incomplete notices and failed material requests retain source navigation.
+
 Events are committed before delivery. Text and each attachment have separate durable
 acknowledgments; a failed attachment does not resend successful text. Errors retry at
 most five times with bounded backoff and Telegram retry_after. A timeout/crash can
@@ -148,3 +154,5 @@ cannot guarantee removal of personal/course information. `/editar descricao`,
 returns a copyable draft and the project's manual issue link to this same private
 chat. **No issue is opened, and no maintainer/teacher/admin receives the report.**
 Restart/timeout discards drafts; scheduled notifications remain independent.
+
+Deployment status and remaining authorization-dependent steps: [operational checklist](deployment-checklist.md).

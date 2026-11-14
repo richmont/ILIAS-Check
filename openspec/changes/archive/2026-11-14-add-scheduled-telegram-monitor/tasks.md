@@ -38,3 +38,14 @@ Depends on the three core changes; implement before `add-interactive-telegram-bo
 ## Verification evidence
 
 See `docs/telegram.md` and `tests/test_monitor_bot.py`: transactional state/migrations, transitions, partial checks, component retries, dry runs and failure maintenance are covered. A real collector-backed dry run planned events without Telegram calls or notification acknowledgments. Live sends and cron activation remain separate authorization steps.
+
+## Review and closure — 2026-11-14
+
+Implementation and regression evidence were reviewed before archival. See
+`docs/reviews/2026-11-14-openspec-implementation.md` for the cross-feature review
+and corrections. All 408 offline tests pass. Capability deltas are synchronized
+into the main specifications; no implementation task remains unchecked.
+
+Live Telegram tests, document transmission and worker/cron activation remain
+separate authorization-dependent operations, tracked in
+`docs/deployment-checklist.md`. Archival does not perform or authorize them.

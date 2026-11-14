@@ -117,14 +117,16 @@ class MonitorState:
                     confirmed = activity["status"]
                     generation = fingerprint([episode, activity["status"], activity.get("deadline_at"),
                                               sorted((d["document_id"], d.get("cache", {}).get("sha256")) for d in activity.get("support_documents", []) if d.get("selected_for_support"))])
+                same_generation = old is not None and old["generation"] == generation
+                notified_at = old["notified_at"] if same_generation else None
                 self.db.execute("INSERT OR REPLACE INTO observations VALUES (?,?,?,?,?,?,?,?)",
-                                (aid, encode(activity), confirmed, generation, episode, int(fresh and activity["status"] != "unknown"), checked, old["notified_at"] if old else None))
+                                (aid, encode(activity), confirmed, generation, episode, int(fresh and activity["status"] != "unknown"), checked, notified_at))
                 if fresh and activity["status"] == "submitted":
                     self.db.execute("INSERT OR REPLACE INTO submission_history VALUES (?,?,?)", (aid, encode(activity), checked))
                 if fresh and activity["status"] == "pending":
                     self._event(fingerprint([aid, generation]), aid, generation, "pending", now, activity, documents)
-                    if reminder_hours and old and old["notified_at"] and now - instant(old["notified_at"]) >= timedelta(hours=reminder_hours):
-                        self._event(fingerprint([aid, generation, "reminder", old["notified_at"]]), aid, generation, "reminder", now, activity, documents)
+                    if reminder_hours and notified_at and now - instant(notified_at) >= timedelta(hours=reminder_hours):
+                        self._event(fingerprint([aid, generation, "reminder", notified_at]), aid, generation, "reminder", now, activity, documents)
             missing = sorted(row["id"] for row in self.db.execute("SELECT id FROM observations WHERE current=0 AND confirmed='pending'"))
             health = [missing, sorted((a["exercise_id"], a["assignment_id"] or "", a.get("reason_codes", [])) for a in inventory.get("activities", []) if a["status"] == "unknown"),
                       sorted((c["root_id"], c["complete"], c.get("warnings", [])) for c in inventory.get("coverage", [])),
@@ -136,7 +138,7 @@ class MonitorState:
             summary["observation_complete"] = not incomplete
             summary["health_generation"] = fingerprint(health) if incomplete else None
             self.db.execute("INSERT OR REPLACE INTO snapshot VALUES (1,?)", (encode(summary),))
-            self._reconcile()
+            self._reconcile(now)
 
     def _event(self, eid, aid, generation, kind, now, activity, documents):
         created = self.db.execute("INSERT OR IGNORE INTO events VALUES (?,?,?,?,?)", (eid, aid, generation, kind, stamp(now))).rowcount
@@ -148,14 +150,16 @@ class MonitorState:
                 if material.get("selected_for_support") and material.get("role") == "support" and material.get("cache", {}).get("eligible"):
                     self.db.execute("INSERT OR IGNORE INTO components(event_id,kind,document_id,state) VALUES (?,'document',?,'queued')", (eid, material["document_id"]))
 
-    def _reconcile(self):
+    def _reconcile(self, now):
         snapshot = self.snapshot() or {}
         for row in self.db.execute("SELECT c.rowid AS rid,c.*,e.activity_id,e.generation,e.kind AS event_kind FROM components c JOIN events e ON c.event_id=e.id WHERE c.state IN ('queued','paused','uncertain')").fetchall():
             if row["activity_id"] is None:
-                state = "queued" if row["generation"] == snapshot.get("health_generation") else "cancelled"
+                state = ("uncertain" if row["state"] == "uncertain" else "queued") if row["generation"] == snapshot.get("health_generation") else "cancelled"
             else:
                 observation = self.db.execute("SELECT * FROM observations WHERE id=?", (row["activity_id"],)).fetchone()
-                if not observation or not observation["current"]:
+                if (not observation or not observation["current"]
+                        or now - instant(observation["checked_at"]) > timedelta(minutes=15)
+                        or instant(observation["checked_at"]) > now + timedelta(seconds=60)):
                     state = "paused"
                 elif observation["confirmed"] != "pending" or row["generation"] != observation["generation"]:
                     state = "cancelled"
@@ -165,8 +169,19 @@ class MonitorState:
 
     def due(self, now):
         with self.db:
-            self._reconcile()
+            self._reconcile(now)
         return self.db.execute("SELECT c.*,e.activity_id,e.generation,e.kind AS event_kind FROM components c JOIN events e ON c.event_id=e.id WHERE c.state IN ('queued','uncertain') AND (retry_at IS NULL OR retry_at<=?) AND attempts<5 ORDER BY e.created_at,c.kind DESC LIMIT 50", (stamp(now),)).fetchall()
+
+    def dispatchable(self, component, now):
+        """Recheck a prefetched component immediately before its external side effect."""
+        with self.db:
+            self._reconcile(now)
+        row = self.db.execute(
+            "SELECT state,attempts,retry_at FROM components WHERE event_id=? AND kind=? AND document_id=?",
+            (component["event_id"], component["kind"], component["document_id"]),
+        ).fetchone()
+        return bool(row and row["state"] in {"queued", "uncertain"} and row["attempts"] < 5
+                    and (row["retry_at"] is None or instant(row["retry_at"]) <= now))
 
     def acknowledged(self, component, message_id, now):
         with self.db:

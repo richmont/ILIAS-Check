@@ -137,6 +137,18 @@ def activity_message(activity, checked_at, incomplete=False, stale=False):
               "closed_without_submission": "Encerrada sem entrega", "excluded": "Fora do filtro de uploads",
               "not_yet_open": "Ainda não aberta", "unknown": "Inconclusivo — precisa verificar"}
     lines = [labels[activity["status"]], activity["title"], f"Observado em: {checked_at}"]
+    reasons = {
+        "accepting_without_submission": "A atividade aceita arquivos e não há entrega confirmada.",
+        "personal_submission_confirmed": "Há uma entrega pessoal confirmada no ILIAS.",
+        "team_submission_confirmed": "Há uma entrega confirmada para a sua equipe.",
+        "closed_without_submission": "O ILIAS confirmou o encerramento sem entrega.",
+        "not_yet_open": "O período de envio ainda não está aberto.",
+        "explicitly_excluded": "A atividade foi excluída pelo filtro local configurado.",
+        "not_applicable": "A fonte ou o filtro configurado indica que esta atividade não se aplica.",
+        "non_file_delivery": "A atividade não utiliza entrega de arquivo.",
+    }
+    if activity["status"] != "unknown" and activity.get("reason_codes"):
+        lines.append("Motivo: " + " ".join(reasons.get(reason, "Consulte os critérios e a fonte no ILIAS.") for reason in activity["reason_codes"]))
     if incomplete or stale:
         lines.append("Verificação incompleta ou observação antiga; confira a situação no ILIAS.")
     lines.append(f"Prazo: {activity.get('deadline_text') or 'não informado'} ({activity.get('deadline_timezone') or 'fuso não resolvido'})")
@@ -154,7 +166,16 @@ def activity_message(activity, checked_at, incomplete=False, stale=False):
         lines.append(f"Entrega {scope}: {history.get('submitted_at') or 'data não confirmada'}; anexo: {_known(history.get('attachment_present'))}; aprovação: {_known(history.get('approved'))}; conclusão: {_known(history.get('completed'))}.")
     docs = activity.get("support_documents", [])
     if docs:
-        lines.append("Materiais de apoio: " + "; ".join(f"{d['title'][:100]} ({d['state']})" for d in docs if d.get("role") == "support")[:500])
+        states = {"cached": "cópia disponível", "unchanged": "cópia validada", "metadata_only": "somente referência",
+                  "unavailable": "indisponível", "stale": "validação pendente", "expired": "expirado",
+                  "evicted": "removido por limite de armazenamento", "skipped": "não obtido", "error": "falha na obtenção"}
+        materials = []
+        for document in docs:
+            if document.get("role") == "support":
+                association = "contextual; " if document.get("association") == "contextual" else ""
+                state = states.get(document["state"], "estado não confirmado")
+                materials.append(f"{document['title'][:100]} ({association}{state})")
+        lines.append("Materiais de apoio: " + "; ".join(materials)[:500])
     return "\n".join(lines)
 
 
