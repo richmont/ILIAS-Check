@@ -226,6 +226,156 @@
         "additionalProperties": false
       }
     },
+    "activities": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "exercise_id",
+          "assignment_id",
+          "title",
+          "submission_type",
+          "applicability",
+          "availability",
+          "status",
+          "reason_codes",
+          "evidence",
+          "deadline_text",
+          "deadline_at",
+          "url",
+          "url_kind",
+          "paths",
+          "submission_history"
+        ],
+        "properties": {
+          "exercise_id": {
+            "type": "string",
+            "pattern": "^[1-9][0-9]*$"
+          },
+          "assignment_id": {
+            "type": ["string", "null"],
+            "pattern": "^[1-9][0-9]*$"
+          },
+          "title": {
+            "type": "string"
+          },
+          "submission_type": {
+            "enum": ["file_upload", "text", "other", "unknown"]
+          },
+          "applicability": {
+            "enum": ["applicable", "not_applicable", "unknown"]
+          },
+          "availability": {
+            "enum": [
+              "accepting_submissions",
+              "not_yet_open",
+              "closed",
+              "unknown"
+            ]
+          },
+          "status": {
+            "enum": [
+              "pending",
+              "submitted",
+              "closed_without_submission",
+              "not_yet_open",
+              "excluded",
+              "unknown"
+            ]
+          },
+          "reason_codes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "uniqueItems": true
+          },
+          "evidence": {
+            "type": "object",
+            "properties": {
+              "delivery_confirmed": {
+                "type": ["boolean", "null"]
+              },
+              "acceptance_confirmed": {
+                "type": ["boolean", "null"]
+              },
+              "submission_present": {
+                "type": ["boolean", "null"]
+              },
+              "applicability_source": {
+                "type": ["string", "null"]
+              },
+              "submission_source": {
+                "type": ["string", "null"]
+              }
+            },
+            "additionalProperties": false
+          },
+          "deadline_text": {
+            "type": ["string", "null"]
+          },
+          "deadline_at": {
+            "type": ["string", "null"],
+            "format": "date-time"
+          },
+          "url": {
+            "type": ["string", "null"],
+            "format": "uri",
+            "pattern": "^https://"
+          },
+          "url_kind": {
+            "enum": ["assignment", "exercise", "sequence_entry"]
+          },
+          "paths": {
+            "type": "array",
+            "items": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          },
+          "submission_history": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "submitted_at",
+                "attachment_present",
+                "attachment_count",
+                "scope",
+                "approved",
+                "completed"
+              ],
+              "properties": {
+                "submitted_at": {
+                  "type": ["string", "null"],
+                  "format": "date-time"
+                },
+                "attachment_present": {
+                  "type": ["boolean", "null"]
+                },
+                "attachment_count": {
+                  "type": ["integer", "null"],
+                  "minimum": 0
+                },
+                "scope": {
+                  "enum": ["personal", "team", "unknown"]
+                },
+                "approved": {
+                  "type": ["boolean", "null"]
+                },
+                "completed": {
+                  "type": ["boolean", "null"]
+                }
+              },
+              "additionalProperties": false
+            }
+          }
+        },
+        "additionalProperties": false
+      }
+    },
     "errors": {
       "type": "array",
       "items": {

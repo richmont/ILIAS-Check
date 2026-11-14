@@ -31,6 +31,10 @@ _TYPE_NAMES = {
     "svy": "survey",
     "frm": "forum",
 }
+_READ_ONLY_BASE_CLASS_COMMANDS = {
+    "ilrepositorygui": {"", "infoscreen"},
+    "ilexercisehandlergui": {"infoscreen"},
+}
 _TARGET = re.compile(r"^(?P<type>[A-Za-z][A-Za-z0-9_-]*)_(?P<id>[0-9]+)$")
 _PATH_PAIR = re.compile(
     r"(?:^|/)goto\.php/(?P<type>[A-Za-z][A-Za-z0-9_-]*)/(?P<id>[0-9]+)(?:/|$)",
@@ -126,13 +130,15 @@ def normalize_object_link(
         return None
     query = parse_qs(parsed.query, keep_blank_values=True)
     base_classes = [value.lower() for value in query.get("baseClass", [])]
+    base_class = base_classes[0] if len(base_classes) == 1 else ""
+    read_only_cmds = _READ_ONLY_BASE_CLASS_COMMANDS.get(base_class, set())
     if any(
         key.lower().split("[", 1)[0] in _MUTATION_QUERY_KEYS
         and not (
             parsed.path.rsplit("/", 1)[-1].lower() == "ilias.php"
             and key.lower() == "cmd"
-            and base_classes == ["ilrepositorygui"]
-            and [value.lower() for value in values] in ([""], ["infoscreen"])
+            and len(values) == 1
+            and values[0].lower() in read_only_cmds
         )
         for key, values in query.items()
     ):
@@ -167,15 +173,30 @@ def normalize_object_link(
                 type_code = explicit_type or _type_from_base_class(base_class)
                 if type_code:
                     found = type_code, ref_id
-                    if not explicit_type and base_class.lower() == "ilrepositorygui":
+                    normalized_base_class = base_class.lower()
+                    if (
+                        not explicit_type
+                        and normalized_base_class
+                        in _READ_ONLY_BASE_CLASS_COMMANDS
+                    ):
                         read_query = {
-                            "baseClass": "ilRepositoryGUI",
+                            "baseClass": (
+                                "ilExerciseHandlerGUI"
+                                if normalized_base_class == "ilexercisehandlergui"
+                                else "ilRepositoryGUI"
+                            ),
                             "ref_id": str(int(ref_id)),
                             "client_id": client_id,
                         }
-                        if [value.lower() for value in query.get("cmd", [])] == [
-                            "infoscreen"
-                        ]:
+                        commands = query.get("cmd", [])
+                        if (
+                            normalized_base_class == "ilexercisehandlergui"
+                            and
+                            len(commands) == 1
+                            and commands[0].lower()
+                            in _READ_ONLY_BASE_CLASS_COMMANDS[normalized_base_class]
+                            and commands[0]
+                        ):
                             read_query["cmd"] = "infoScreen"
                         legacy_read_url = urlunsplit(
                             (
@@ -198,7 +219,7 @@ def normalize_object_link(
         type_code=type_code.lower(),
         object_type=(
             "unresolved"
-            if legacy_read_url is not None
+            if legacy_read_url is not None and type_code.lower() == "obj"
             else _TYPE_NAMES.get(type_code.lower(), "unsupported")
         ),
         url=canonical_object_url(base_url, client_id, type_code.lower(), ref_id),
@@ -208,6 +229,8 @@ def normalize_object_link(
 
 def _type_from_base_class(base_class: str) -> str | None:
     normalized = base_class.lower()
+    if normalized == "ilexercisehandlergui":
+        return "exc"
     if "repository" in normalized:
         return "obj"
     if "sequence" in normalized:

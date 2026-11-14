@@ -86,8 +86,72 @@ def test_normalizer_allows_empty_default_cmd_but_rejects_actions() -> None:
         "academy",
     ).read_url == (
         f"{BASE}/ilias.php?baseClass=ilRepositoryGUI&ref_id=456"
+        "&client_id=academy"
+    )
+
+
+def test_normalizer_recognizes_legacy_exercise_handler_info_screen() -> None:
+    ref = normalize_object_link(
+        "/ilias.php?baseClass=ilExerciseHandlerGUI&ref_id=789&cmd=infoScreen",
+        f"{BASE}/ilias.php",
+        BASE,
+        "academy",
+    )
+
+    assert ref is not None
+    assert ref.object_type == "exercise"
+    assert ref.type_code == "exc"
+    assert ref.url == f"{BASE}/goto.php?target=exc_789&client_id=academy"
+    assert ref.read_url == (
+        f"{BASE}/ilias.php?baseClass=ilExerciseHandlerGUI&ref_id=789"
         "&client_id=academy&cmd=infoScreen"
     )
+
+
+def test_normalizer_sanitizes_repository_wrapper_view_link() -> None:
+    ref = normalize_object_link(
+        "/ilias.php?baseClass=ilrepositorygui&cmdNode=xn:r6"
+        "&cmdClass=ilObjTestGUI&cmd=infoScreen&ref_id=660&ref_id=660",
+        f"{BASE}/ilias.php",
+        BASE,
+        "academy",
+    )
+
+    assert ref is not None
+    assert ref.object_type == "unresolved"
+    assert ref.ref_id == "660"
+    assert ref.read_url == (
+        f"{BASE}/ilias.php?baseClass=ilRepositoryGUI&ref_id=660"
+        "&client_id=academy"
+    )
+
+
+@pytest.mark.parametrize(
+    "href",
+    [
+        "/ilias.php?baseClass=ilExerciseHandlerGUI&ref_id=789&cmd=post",
+        "/ilias.php?baseClass=ilExerciseHandlerGUI&ref_id=789&cmd[next]=",
+        "/ilias.php?baseClass=ilExerciseHandlerGUI&ref_id=789&cmd=infoScreen&sesskey=secret",
+    ],
+)
+def test_normalizer_rejects_unsafe_exercise_handler_routes(href: str) -> None:
+    assert normalize_object_link(href, f"{BASE}/ilias.php", BASE, "academy") is None
+
+
+def test_repository_parser_discovers_legacy_exercise_handler_link() -> None:
+    page = parse_repository_page(
+        '<main><div class="ilContainerListItem">'
+        '<a href="/ilias.php?baseClass=ilExerciseHandlerGUI&ref_id=789&cmd=infoScreen">'
+        "Synthetic exercise</a></div></main>",
+        f"{BASE}/ilias.php",
+        BASE,
+        "academy",
+        "folder",
+    )
+
+    assert len(page.links) == 1
+    assert page.links[0].ref.object_type == "exercise"
+    assert page.links[0].ref.ref_id == "789"
 
 
 @pytest.mark.parametrize(
@@ -344,6 +408,36 @@ def test_multiple_paths_within_root_are_preserved() -> None:
         ("Left", "Shared"),
         ("Right", "Shared"),
     }
+
+
+def test_crawler_prioritizes_activity_bearing_containers_within_request_budget() -> None:
+    root = page_url("fold", "1001")
+    nested = page_url("fold", "1002")
+    exercise = page_url("exc", "1003")
+    unrelated = page_url("fold", "1004")
+    auth = FakeAuthenticator(
+        {
+            root: (
+                '<main><h1>Root</h1>'
+                '<div class="ilContainerListItem"><a href="/goto.php?target=fold_1002">Activity folder</a></div>'
+                '<div class="ilContainerListItem"><a href="/goto.php?target=fold_1004">Other folder</a></div>'
+                "</main>"
+            ),
+            nested: (
+                '<main><h1>Activity folder</h1>'
+                '<div class="ilContainerListItem"><a href="/goto.php?target=exc_1003">Exercise</a></div>'
+                "</main>"
+            ),
+            exercise: "<main><h1>Exercise</h1></main>",
+            unrelated: "<main><h1>Other folder</h1></main>",
+        },
+        fail_after=3,
+    )
+
+    result = RepositoryCrawler(make_config(), auth).collect()
+
+    assert auth.calls[:3] == [root, nested, exercise]
+    assert "exc:1003" in result.objects
 
 
 def test_max_depth_marks_partial_coverage() -> None:

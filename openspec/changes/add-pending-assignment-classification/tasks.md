@@ -4,7 +4,7 @@ Depends on: `add-read-only-collector`.
 
 ## 1. Per-unit observations
 
-- [ ] 1.1 Extend typed observations and the JSON Schema with assignment identity, evidence, delivery type, availability, safe link kind, and personal/team submission-history metadata; verify missing dates/attachment details remain unknown and answer bodies are never retrieved.
+- [x] 1.1 Extend typed observations and the JSON Schema with assignment identity, evidence, delivery type, availability, safe link kind, and personal/team submission-history metadata; verify missing dates/attachment details remain unknown and answer bodies are never retrieved.
 - [ ] 1.2 Parse supported exercise current/all-unit views, instructions, personal/team submission lists, and passive sequence metadata; verify mixed-type, multiple-unit, historical, and unresolved-sequence fixtures.
 - [ ] 1.3 Document evidence fields and parser limitations; verify no parser invokes upload, membership, learner transition, or completion actions in transport-spy tests.
 

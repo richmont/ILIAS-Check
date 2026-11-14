@@ -176,9 +176,25 @@ class SafeTransport:
         base_classes = [
             value.lower() for key, value in query if key.lower() == "baseclass"
         ]
+        query_values: dict[str, list[str]] = {}
+        for key, value in query:
+            query_values.setdefault(key.lower(), []).append(value)
         for key, value in query:
             lowered = key.lower()
             action_key = lowered.split("[", 1)[0]
+            is_safe_exercise_info = (
+                basename == "ilias.php"
+                and base_classes == ["ilexercisehandlergui"]
+                and lowered == "cmd"
+                and value.lower() == "infoscreen"
+                and query_values.get("cmd") == [value]
+                and len(query_values.get("ref_id", [])) == 1
+                and query_values["ref_id"][0].isdigit()
+                and int(query_values["ref_id"][0]) > 0
+                and set(query_values).issubset(
+                    {"baseclass", "cmd", "ref_id", "client_id"}
+                )
+            )
             is_safe_repository_cmd = (
                 basename == "ilias.php"
                 and lowered == "cmd"
@@ -192,7 +208,11 @@ class SafeTransport:
             )
             if (
                 action_key in _ACTION_QUERY_KEYS
-                and not (is_safe_repository_cmd or is_login_force_command)
+                and not (
+                    is_safe_repository_cmd
+                    or is_safe_exercise_info
+                    or is_login_force_command
+                )
             ) or any(
                 part in lowered for part in _SENSITIVE_QUERY_PARTS
             ):

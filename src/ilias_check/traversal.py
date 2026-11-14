@@ -61,6 +61,19 @@ class _QueueItem:
     ancestors: frozenset[str]
 
 
+def _traversal_priority(object_type: str) -> int:
+    """Explore likely activity-bearing containers before generic legacy items."""
+    return {
+        "exercise": 0,
+        "folder": 1,
+        "course": 1,
+        "category": 1,
+        "group": 1,
+        "learning_sequence": 2,
+        "unresolved": 3,
+    }.get(object_type, 4)
+
+
 def _promote_legacy_identity(
     legacy_key: str,
     resolved_ref: ObjectRef,
@@ -392,7 +405,11 @@ class RepositoryCrawler:
                 coverage_by_root[item.root_id].complete = False
                 coverage_by_root[item.root_id].warnings.append("maximum_depth_reached")
                 continue
-            for link in page.links:
+            prioritized_links = sorted(
+                page.links,
+                key=lambda link: _traversal_priority(link.ref.object_type),
+            )
+            for link in reversed(prioritized_links):
                 child_key = link.ref.key
                 if child_key in ancestors or child_key == key:
                     warning = "cycle_detected"
@@ -442,7 +459,7 @@ class RepositoryCrawler:
                     continue
                 if link.ref.object_type == "unresolved":
                     child.url = link.ref.read_url or link.ref.url
-                queue.append(
+                queue.appendleft(
                     _QueueItem(
                         ref=link.ref,
                         root_id=item.root_id,
