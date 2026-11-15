@@ -9,7 +9,9 @@ import sqlite3
 from ilias_check.collector import collect_inventory
 from ilias_check.monitor_state import MonitorState
 from ilias_check.support_cache import SupportCache, cache_inventory
-from ilias_check.telegram import TelegramClient, TelegramError, activity_message, source_buttons
+from ilias_check.telegram import (
+    TelegramClient, TelegramError, activity_message, format_time, source_buttons,
+)
 
 
 def effective_config(config, state):
@@ -39,7 +41,7 @@ def dispatch(state, config, telegram, client, now, clock):
         try:
             if component["kind"] == "message":
                 if activity:
-                    result = client.message(activity_message(activity, observation["checked_at"], incomplete), source_buttons(activity))
+                    result = client.message(activity_message(activity, observation["checked_at"], incomplete, timezone_name=config.classification_policy.timezone), source_buttons(activity))
                 else:
                     unknown = [a for a in snapshot.get("activities", []) if a["status"] == "unknown"]
                     missing = [json.loads(row["activity"]) for row in state.db.execute(
@@ -48,7 +50,7 @@ def dispatch(state, config, telegram, client, now, clock):
                     details = "\n".join(a["title"][:180] for a in candidates)
                     buttons = [row for a in candidates for row in source_buttons(a)]
                     result = client.message("Verificação incompleta. Inconclusivo — precisa verificar.\n"
-                                            f"Observado em: {snapshot.get('checked_at', 'não confirmado')}\n{details}\n"
+                                            f"Observado em: {format_time(snapshot.get('checked_at'), config.classification_policy.timezone)}\n{details}\n"
                                             "Use /verificar e /relatar para descrever como espera que o bot exiba essas atividades. O feedback não altera a situação no ILIAS.", buttons)
             else:
                 material = next((d for d in activity.get("support_documents", []) if d.get("document_id") == component["document_id"] and d.get("selected_for_support") and d.get("role") == "support"), None)

@@ -641,3 +641,116 @@ def test_futuras_lists_not_yet_open_activities(config, telegram):
         bot.handle(update("/futuras"))
         assert client.messages[0][0].startswith("Ainda não abertas — observação de")
         assert any("Übung <b>Original</b>" in text for text, _ in client.messages)
+
+
+def test_telegram_config_accepts_additional_allowed_users():
+    values = {"ILIAS_TELEGRAM_ENABLED": "true", "TELEGRAM_BOT_TOKEN": TOKEN,
+              "TELEGRAM_CHAT_ID": "100", "TELEGRAM_ALLOWED_USER_ID": "200",
+              "TELEGRAM_ALLOWED_USER_IDS": "300, 400, 300"}
+    config = TelegramConfig.from_mapping(values, worker=True)
+    assert config.permitted_user_ids == {"200", "300", "400"}
+
+    only_extra = TelegramConfig.from_mapping(
+        {**values, "TELEGRAM_ALLOWED_USER_ID": "", "TELEGRAM_ALLOWED_USER_IDS": "300"},
+        worker=True,
+    )
+    assert only_extra.permitted_user_ids == {"300"}
+
+    with pytest.raises(CacheError):
+        TelegramConfig.from_mapping({**values, "TELEGRAM_ALLOWED_USER_IDS": "300,abc"})
+    with pytest.raises(CacheError):
+        TelegramConfig.from_mapping({**values, "TELEGRAM_ALLOWED_USER_ID": "200x"})
+
+
+def test_secondary_user_needs_own_private_chat_and_has_isolated_draft(config, telegram):
+    telegram = replace(telegram, allowed_user_ids=("300",))
+    with MonitorState(config, telegram.state_dir).open() as state:
+        state.observe(inventory("pending"), NOW)
+        client = Client(); bot = Bot(config, telegram, state, client, lambda: NOW)
+        bot.handle(update("/pendentes", uid=1, user=300, chat=300))
+        assert client.messages[0][0].startswith("Pendentes")
+
+        sent = len(client.messages)
+        bot.handle(update("/pendentes", uid=2, user=300, chat=100))
+        bot.handle(update("/pendentes", uid=3, user=301, chat=301))
+        assert len(client.messages) == sent
+
+        bot.handle(update("/relatar", uid=4, user=300, chat=300))
+        bot.handle(update("descrição do secundário", uid=5, user=300, chat=300))
+        bot.handle(update("esperado do secundário", uid=6, user=300, chat=300))
+        bot.handle(update("/relatar", uid=7))
+        bot.handle(update("descrição do dono", uid=8))
+        bot.handle(update("esperado do dono", uid=9))
+        bot.handle(update("ocorrido do dono", uid=10))
+        bot.handle(update("-", uid=11))
+        bot.handle(update("/exportar", uid=12))
+        report = client.messages[-1][0]
+        assert "Nenhuma issue foi aberta" in report
+        assert "descrição do dono" in report and "esperado do dono" in report
+        assert "secundário" not in report
+
+
+def test_material_token_is_bound_to_the_requesting_user(config, telegram):
+    telegram = replace(telegram, allowed_user_ids=("300",))
+    data = inventory()
+    data["activities"][0]["support_documents"] = [{"document_id": "file:9", "title": "Blatt.pdf", "selected_for_support": True, "role": "support", "state": "metadata_only"}]
+    calls = []
+    with MonitorState(config, telegram.state_dir).open() as state:
+        state.observe(data, NOW)
+        client = Client(); bot = Bot(config, telegram, state, client, lambda: NOW, lambda c: calls.append(c) or deepcopy(data))
+        bot.handle(update("/materiais"))
+        token = client.messages[-1][1][0][0]["callback_data"]
+        bot.handle(update(uid=2, user=300, chat=300, callback=token))
+        assert not calls
+        assert "Ação expirada" in client.messages[-1][0]
+
+
+def test_activity_and_view_times_use_day_month_year_format(config, telegram):
+    with MonitorState(config, telegram.state_dir).open() as state:
+        state.observe(inventory("pending"), NOW)
+        client = Client(); bot = Bot(config, telegram, state, client, lambda: NOW)
+        bot.handle(update("/pendentes"))
+        text = "\n".join(t for t, _ in client.messages)
+        assert "observação de 14/11/2026 00:00" in text
+        assert "Observado em: 14/11/2026 00:00" in text
+        assert "2026-11-14T00:00:00Z" not in text
+
+
+def test_course_timezone_is_applied_to_message_times(config, telegram):
+    from ilias_check.telegram import format_time
+    assert format_time("2026-11-15T01:24:54Z") == "15/11/2026 01:24"
+    assert format_time("2026-11-15T01:24:54Z", "Europe/Berlin") == "15/11/2026 02:24"
+    assert format_time("kein Termin") == "kein Termin"
+    assert format_time(None) == "não informado"
+
+
+def test_worker_registers_the_command_menu(telegram):
+    from ilias_check.bot import _COMMANDS
+
+    class Response:
+        status_code = 200
+        def json(self): return {"ok": True, "result": True}
+        def close(self): pass
+
+    class Session:
+        def __init__(self): self.calls = []
+        def post(self, url, **options):
+            self.calls.append((url, options)); return Response()
+
+    session = Session()
+    TelegramClient(telegram, session).set_commands(_COMMANDS)
+    url, options = session.calls[-1]
+    assert url.endswith("/setMyCommands")
+    assert [item["command"] for item in options["json"]["commands"]][:3] == ["start", "ajuda", "pendentes"]
+    assert all(item["description"] for item in options["json"]["commands"])
+
+
+def test_ajuda_is_help_only_and_start_lists_pending(config, telegram):
+    with MonitorState(config, telegram.state_dir).open() as state:
+        state.observe(inventory("pending"), NOW)
+        client = Client(); bot = Bot(config, telegram, state, client, lambda: NOW)
+        bot.handle(update("/ajuda"))
+        assert len(client.messages) == 1 and client.messages[0][0].startswith("/pendentes —")
+        bot.handle(update("/start", uid=2))
+        assert "/futuras" in client.messages[1][0]
+        assert client.messages[2][0].startswith("Pendentes — observação de")

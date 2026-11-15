@@ -16,7 +16,10 @@ from ilias_check.monitor import effective_config, maintain
 from ilias_check.monitor_state import MonitorState
 from ilias_check.private_storage import process_lock
 from ilias_check.support_cache import SupportCache, association_id, cache_inventory, instant, stamp
-from ilias_check.telegram import TelegramClient, TelegramError, activity_message, redact, safe_link, source_buttons
+from ilias_check.telegram import (
+    TelegramClient, TelegramError, activity_message, format_time, redact, safe_link,
+    source_buttons,
+)
 from ilias_check.transport import SafeTransport
 
 _ISSUES = "https://github.com/richmont/ILIAS-Check/issues/new"
@@ -43,6 +46,21 @@ _STATUS_LABELS = (("pending", "pendentes"), ("submitted", "entregues"),
                   ("closed_without_submission", "encerradas sem entrega"),
                   ("not_yet_open", "ainda não abertas"), ("excluded", "excluídas"),
                   ("unknown", "inconclusivas"))
+_COMMANDS = (
+    {"command": "start", "description": "Iniciar e ver a ajuda"},
+    {"command": "ajuda", "description": "Lista de comandos"},
+    {"command": "pendentes", "description": "Uploads pendentes"},
+    {"command": "entregues", "description": "Histórico de entregas"},
+    {"command": "encerradas", "description": "Encerradas sem entrega"},
+    {"command": "futuras", "description": "Ainda não abertas"},
+    {"command": "verificar", "description": "Casos inconclusivos"},
+    {"command": "resumo", "description": "Contagem por situação"},
+    {"command": "materiais", "description": "Materiais de apoio disponíveis"},
+    {"command": "configuracoes", "description": "Retenção e uso do cache"},
+    {"command": "retencao", "description": "Ajustar retenção de materiais"},
+    {"command": "relatar", "description": "Relatar problema do software"},
+    {"command": "cancelar", "description": "Cancelar diálogo"},
+)
 _FIELDS = ("descrição", "esperado", "ocorrido", "link")
 _PROMPTS = ("Descreva o problema deste software (somente texto, até 800 caracteres).",
             "Como você esperava que o bot se comportasse ou exibisse a atividade?",
@@ -60,18 +78,32 @@ class Bot:
         self.clock = clock or (lambda: datetime.now(timezone.utc))
         self.collector = collector
         self.retrieve = retrieve or self._retrieve
-        self.requests = deque(maxlen=30)
+        self.requests = {}
         self.tokens = {}
         self.draft = None
+        self.drafts = {}
         self.last_check = None
         self.last_maintenance = None
 
-    def authorized(self, update):
+    @staticmethod
+    def _sender(update):
         callback = update.get("callback_query")
         message = callback.get("message", {}) if callback else update.get("message", {})
         sender = callback.get("from", {}) if callback else message.get("from", {})
-        chat = message.get("chat", {})
-        return str(sender.get("id")) == self.telegram.allowed_user_id and str(chat.get("id")) == self.telegram.chat_id and chat.get("type") == "private" and not sender.get("is_bot")
+        return sender, message.get("chat", {})
+
+    def authorized(self, update):
+        sender, chat = self._sender(update)
+        if sender.get("is_bot") or chat.get("type") != "private":
+            return False
+        user_id, chat_id = str(sender.get("id")), str(chat.get("id"))
+        if user_id not in self.telegram.permitted_user_ids:
+            return False
+        # The configured chat belongs to the primary owner; additional users are
+        # accepted only in their own private chat, where chat ID equals user ID.
+        if chat_id == self.telegram.chat_id:
+            return user_id == self.telegram.allowed_user_id
+        return chat_id == user_id
 
     def handle(self, update):
         update_id = update.get("update_id")
@@ -82,12 +114,25 @@ class Bot:
         self.state.set_cursor(cursor, update_id + 1)
         if not self.authorized(update):
             return
+        uid = str(self._sender(update)[0].get("id"))
         now = self.clock()
-        while self.requests and now - self.requests[0] >= timedelta(minutes=1):
-            self.requests.popleft()
-        if len(self.requests) >= 20:
+        requests = self.requests.setdefault(uid, deque(maxlen=30))
+        while requests and now - requests[0] >= timedelta(minutes=1):
+            requests.popleft()
+        if len(requests) >= 20:
             return
-        self.requests.append(now)
+        requests.append(now)
+        self.draft = self.drafts.get(uid)
+        try:
+            self._dispatch(update, uid, now)
+        finally:
+            if self.draft is None:
+                self.drafts.pop(uid, None)
+            else:
+                self.drafts[uid] = self.draft
+            self.draft = None
+
+    def _dispatch(self, update, uid, now):
         if self.draft and now - self.draft["started"] >= timedelta(minutes=30):
             self.draft = None
             self.client.message("O rascunho expirou. Inicie novamente com /relatar.")
@@ -97,7 +142,7 @@ class Bot:
                 self.client.call("answerCallbackQuery", {"callback_query_id": callback["id"]})
             except TelegramError:
                 pass
-            return self._callback(callback.get("data", ""))
+            return self._callback(callback.get("data", ""), uid)
         message = update.get("message", {})
         text = message.get("text")
         if not isinstance(text, str):
@@ -124,15 +169,17 @@ class Bot:
             self.client.message(self._report() + f"\nNenhuma issue foi aberta. Compartilhe manualmente após revisar: {_ISSUES}")
             self.draft = None
         elif command.startswith("/"):
-            if command in {"/start", "/ajuda"}:
+            if command == "/start":
                 self.client.message(_HELP)
                 self._view("pending", 1)
+            elif command == "/ajuda":
+                self.client.message(_HELP)
             elif command in _VIEWS:
                 page = int(parts[1]) if len(parts) == 2 and parts[1].isdigit() else 1
                 self._view(_VIEWS[command], page)
             elif command == "/materiais":
                 page = int(parts[1]) if len(parts) == 2 and parts[1].isdigit() else 1
-                self._materials(page)
+                self._materials(page, uid)
             elif command == "/configuracoes":
                 self._settings()
             elif command == "/resumo":
@@ -162,13 +209,13 @@ class Bot:
                     result.append((json.loads(row["activity"]), row["checked_at"], True))
         return result
 
-    def _token(self, action, payload):
+    def _token(self, action, payload, owner):
         now = self.clock()
         self.tokens = {k: v for k, v in self.tokens.items() if now - v[2] < timedelta(minutes=30)}
         while len(self.tokens) >= 500:
             self.tokens.pop(next(iter(self.tokens)))
         token = secrets.token_urlsafe(12)
-        self.tokens[token] = (action, payload, now)
+        self.tokens[token] = (action, payload, now, owner)
         return token
 
     def _view(self, status, page):
@@ -177,7 +224,7 @@ class Bot:
         page = min(max(page, 1), page_count)
         snapshot = self.state.snapshot() or {}
         incomplete = not snapshot.get("observation_complete", False) or not snapshot.get("classification", {}).get("complete", False) or any(not c["complete"] for c in snapshot.get("coverage", []))
-        text = (f"{_TITLES[status]} — observação de {snapshot.get('checked_at', 'nenhuma')}; "
+        text = (f"{_TITLES[status]} — observação de {self._observed(snapshot)}; "
                 f"página {page}/{page_count}.")
         if not rows:
             text += " " + _EMPTY[status]
@@ -192,10 +239,17 @@ class Bot:
         self.client.message(text)
         for activity, checked, stale in rows[(page - 1) * 4:page * 4]:
             stale = stale or self.clock() - instant(checked) > timedelta(hours=12)
-            self.client.message(activity_message(activity, checked, incomplete, stale), source_buttons(activity))
+            self.client.message(activity_message(activity, checked, incomplete, stale, self._timezone()), source_buttons(activity))
         if page < page_count:
             command = next((k for k, v in _VIEWS.items() if v == status), "/pendentes")
             self.client.message(f"Próxima página: {command} {page + 1}")
+
+    def _timezone(self):
+        return self.config.classification_policy.timezone
+
+    def _observed(self, snapshot):
+        checked = snapshot.get("checked_at")
+        return format_time(checked, self._timezone()) if checked else "nenhuma"
 
     def _health_text(self, snapshot):
         parts = []
@@ -224,15 +278,15 @@ class Bot:
         snapshot = self.state.snapshot() or {}
         counts = self._counts(snapshot)
         if counts:
-            text = f"Resumo da observação de {snapshot.get('checked_at', 'nenhuma')}: {_counts_text(counts)}."
+            text = f"Resumo da observação de {self._observed(snapshot)}: {_counts_text(counts)}."
         else:
-            text = f"Resumo da observação de {snapshot.get('checked_at', 'nenhuma')}: nenhuma atividade registrada."
+            text = f"Resumo da observação de {self._observed(snapshot)}: nenhuma atividade registrada."
         health = self._health_text(snapshot)
         if health:
             text += " " + health
         self.client.message(text)
 
-    def _materials(self, page=1):
+    def _materials(self, page, uid):
         candidates = [(activity, material) for activity, _, stale in self._observations("pending") if not stale
                       for material in activity.get("support_documents", [])
                       if material.get("selected_for_support") and material.get("role") == "support"]
@@ -240,7 +294,7 @@ class Bot:
         page = min(max(page, 1), page_count)
         buttons = []
         for activity, material in candidates[(page - 1) * 10:page * 10]:
-            token = self._token("download", (association_id(activity), material["document_id"]))
+            token = self._token("download", (association_id(activity), material["document_id"]), uid)
             buttons.append([{"text": ("Baixar pelo Telegram: " + material["title"])[:64], "callback_data": token}])
         self.client.message("Ao tocar em um material, você autoriza enviar essa cópia pelo Telegram. Isso não ativa anexos automáticos futuros. "
                             "O envio exige nova verificação no ILIAS; ele pode estar mais atualizado. Cópias já enviadas não podem ser revogadas. "
@@ -249,12 +303,13 @@ class Bot:
         if page < page_count:
             self.client.message(f"Próxima página: /materiais {page + 1}")
 
-    def _callback(self, token):
+    def _callback(self, token, uid):
         entry = self.tokens.pop(token, None)
-        if not entry or self.clock() - entry[2] >= timedelta(minutes=30):
+        if (not entry or entry[3] != uid
+                or self.clock() - entry[2] >= timedelta(minutes=30)):
             self.client.message("Ação expirada ou desconhecida. Abra o menu novamente.")
             return
-        action, payload, _ = entry
+        action, payload, _, _ = entry
         if action != "download":
             return
         aid, document_id = payload
@@ -306,7 +361,7 @@ class Bot:
             except Exception:
                 usage = "temporariamente indisponível"
         self.client.message(f"Sem prazo: {policy.no_deadline_hours} horas (padrão: 168). Limite adicional: {policy.retention_max_hours or 'padrão, sem limite adicional'}. "
-                            f"Prazo/entrega confirmada continuam limites superiores. Uso gerenciado: {usage}; quota: {policy.max_bytes / 1000000:g} MB. Medido em {stamp(self.clock())}. "
+                            f"Prazo/entrega confirmada continuam limites superiores. Uso gerenciado: {usage}; quota: {policy.max_bytes / 1000000:g} MB. Medido em {format_time(stamp(self.clock()), self._timezone())}. "
                             "Expiração e remoção são automáticas; isto não é o uso total do disco.\n"
                             "/retencao sem_prazo 24\n/retencao limite 48\n/retencao padrao\n"
                             "Aumentar a duração não recupera cópias expiradas; uma nova obtenção exige verificação atual.")
@@ -365,6 +420,12 @@ def run_bot(config, telegram, client=None, clock=None, max_polls=None, sleeper=t
             lock_id = hashlib.sha256((telegram.token + ":" + telegram.chat_id).encode()).hexdigest()
             with process_lock(state.fd, "worker-" + lock_id + ".lock"):
                 bot = Bot(config, telegram, state, client, clock)
+                register = getattr(client, "set_commands", None)
+                if callable(register):
+                    try:
+                        register(_COMMANDS)
+                    except TelegramError:
+                        pass
                 cursor = "updates:" + hashlib.sha256(telegram.token.encode()).hexdigest()
                 failures = 0
                 polls = 0

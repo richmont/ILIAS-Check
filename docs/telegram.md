@@ -12,6 +12,11 @@ configuration for cron and the worker. Start from `.env.example`, never real exa
 in Git. Supply `TELEGRAM_BOT_TOKEN`, a positive private `TELEGRAM_CHAT_ID` and, for the
 interactive worker, `TELEGRAM_ALLOWED_USER_ID`. Register the bot manually and open its
 private chat; IDs/destinations are never discovered or changed through `/start`.
+Optional `TELEGRAM_ALLOWED_USER_IDS` accepts a comma-separated list of additional
+numeric IDs. Each extra user must open a private chat with the bot from that account
+and can only query/inspect shared state there; notifications still go to
+`TELEGRAM_CHAT_ID`. Report drafts, rate limits and material buttons are per user.
+All users consult the same ILIAS account, history and retention settings.
 `ILIAS_TELEGRAM_ENABLED=false` is the default. Keep `ILIAS_TELEGRAM_SEND_DOCUMENTS=false`
 unless automatic external transmission of course documents is separately authorized.
 An interactive material button authorizes that selected send only.
@@ -115,7 +120,8 @@ by collector limits and throttled to one per five minutes across worker restarts
 
 | Command | Meaning |
 | --- | --- |
-| `/start`, `/ajuda` | Portuguese help and pending-first view |
+| `/start` | Portuguese help and pending-first view |
+| `/ajuda` | Portuguese help only |
 | `/pendentes [page]` | Confirmed pending file uploads, with stale warnings |
 | `/entregues [page]` | Historical personal/team delivery metadata; approval separate |
 | `/encerradas [page]` | Closed without submission |

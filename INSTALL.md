@@ -159,6 +159,7 @@ ILIAS_TELEGRAM_ENABLED=false
 TELEGRAM_BOT_TOKEN=
 TELEGRAM_CHAT_ID=
 TELEGRAM_ALLOWED_USER_ID=
+TELEGRAM_ALLOWED_USER_IDS=
 ILIAS_TELEGRAM_SEND_DOCUMENTS=false
 ILIAS_TELEGRAM_MAX_DOCUMENT_BYTES=20971520
 ILIAS_TELEGRAM_MAX_MESSAGE_CHARS=4000
@@ -205,6 +206,7 @@ ILIAS_TELEGRAM_ENABLED=false
 TELEGRAM_BOT_TOKEN='REPLACE_WITH_REAL_BOTFATHER_TOKEN'
 TELEGRAM_CHAT_ID=
 TELEGRAM_ALLOWED_USER_ID=
+TELEGRAM_ALLOWED_USER_IDS=
 ILIAS_TELEGRAM_SEND_DOCUMENTS=false
 ```
 
@@ -334,6 +336,7 @@ ILIAS_TELEGRAM_ENABLED=true
 TELEGRAM_BOT_TOKEN='REPLACE_WITH_REAL_BOTFATHER_TOKEN'
 TELEGRAM_CHAT_ID=REPLACE_NUMERIC_CHAT_ID
 TELEGRAM_ALLOWED_USER_ID=REPLACE_NUMERIC_USER_ID
+TELEGRAM_ALLOWED_USER_IDS=
 ILIAS_TELEGRAM_SEND_DOCUMENTS=false
 ```
 
@@ -341,6 +344,13 @@ The [activation template](examples/config/ilias-telegram.env.example) shows the
 complete file. The IDs must be positive integers without `@`, username or group
 prefix. Keeping `ILIAS_TELEGRAM_SEND_DOCUMENTS=false` lets you start with text and
 links only.
+
+To let other Telegram accounts query the same observations, list their numeric IDs
+in `TELEGRAM_ALLOWED_USER_IDS` separated by commas. Each one must open a private
+chat with the bot from that account; commands sent to the primary chat are still
+accepted only from `TELEGRAM_ALLOWED_USER_ID`. Notifications continue to go only to
+`TELEGRAM_CHAT_ID`, and every allowed user sees the same ILIAS data, history and
+retention settings.
 
 Validate the configuration, **without network and without starting the worker**:
 
@@ -361,7 +371,8 @@ try:
     CollectorConfig.from_mapping(values)
     enabled = boolean(values, 'ILIAS_TELEGRAM_ENABLED')
     if enabled:
-        telegram = ('TELEGRAM_BOT_TOKEN', 'TELEGRAM_CHAT_ID', 'TELEGRAM_ALLOWED_USER_ID')
+        telegram = ('TELEGRAM_BOT_TOKEN', 'TELEGRAM_CHAT_ID', 'TELEGRAM_ALLOWED_USER_ID',
+                    'TELEGRAM_ALLOWED_USER_IDS')
         if any('REPLACE' in str(values.get(key, '')) for key in telegram):
             raise ConfigurationError('The Telegram settings still contain REPLACE fields.')
         TelegramConfig.from_mapping(values, worker=True)

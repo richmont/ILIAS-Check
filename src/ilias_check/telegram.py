@@ -2,10 +2,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 import json
 from pathlib import Path
 import re
 from urllib.parse import urlsplit
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import requests
 
@@ -20,6 +22,39 @@ class TelegramError(RuntimeError):
         self.uncertain = uncertain
 
 
+def _user_ids(raw):
+    ids = []
+    for item in (raw or "").split(","):
+        item = item.strip()
+        if not item:
+            continue
+        if not re.fullmatch(r"[1-9][0-9]*", item):
+            raise CacheError("TELEGRAM_ALLOWED_USER_IDS must contain positive numeric user IDs.")
+        if item not in ids:
+            ids.append(item)
+    return tuple(ids)
+
+
+def format_time(value, timezone_name=None):
+    """Render ISO timestamps as DD/MM/YYYY HH:MM in the configured course zone."""
+    if not value:
+        return "não informado"
+    text = str(value)
+    try:
+        moment = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return text
+    if moment.tzinfo is None:
+        return text
+    zone = timezone.utc
+    if timezone_name:
+        try:
+            zone = ZoneInfo(timezone_name)
+        except (ZoneInfoNotFoundError, ValueError):
+            zone = timezone.utc
+    return moment.astimezone(zone).strftime("%d/%m/%Y %H:%M")
+
+
 @dataclass(frozen=True)
 class TelegramConfig:
     enabled: bool = False
@@ -31,6 +66,13 @@ class TelegramConfig:
     max_message_chars: int = 4000
     state_dir: Path = Path("~/.local/share/ilias-check/monitor")
     reminder_hours: int = 0
+    allowed_user_ids: tuple[str, ...] = ()
+
+    @property
+    def permitted_user_ids(self) -> frozenset[str]:
+        return frozenset(
+            item for item in (self.allowed_user_id, *self.allowed_user_ids) if item
+        )
 
     @classmethod
     def from_mapping(cls, values, worker=False):
@@ -38,10 +80,13 @@ class TelegramConfig:
         token = (values.get("TELEGRAM_BOT_TOKEN") or "").strip()
         chat = (values.get("TELEGRAM_CHAT_ID") or "").strip()
         owner = (values.get("TELEGRAM_ALLOWED_USER_ID") or "").strip()
+        extra = _user_ids(values.get("TELEGRAM_ALLOWED_USER_IDS"))
         if enabled and (not re.fullmatch(r"[0-9]+:[A-Za-z0-9_-]{20,}", token) or not re.fullmatch(r"[1-9][0-9]*", chat)):
             raise CacheError("Enabled Telegram requires a valid token and positive private chat ID.")
-        if worker and (not enabled or not re.fullmatch(r"[1-9][0-9]*", owner)):
-            raise CacheError("Bot worker requires enabled Telegram and an allowed user ID.")
+        if owner and not re.fullmatch(r"[1-9][0-9]*", owner):
+            raise CacheError("TELEGRAM_ALLOWED_USER_ID must be a positive numeric user ID.")
+        if worker and (not enabled or not (owner or extra)):
+            raise CacheError("Bot worker requires enabled Telegram and at least one allowed user ID.")
         try:
             reminders = int(values.get("ILIAS_PENDING_REMINDER_HOURS") or 0)
             if reminders < 0:
@@ -51,7 +96,8 @@ class TelegramConfig:
         return cls(enabled, token, chat, owner, boolean(values, "ILIAS_TELEGRAM_SEND_DOCUMENTS"),
                    min(positive(values, "ILIAS_TELEGRAM_MAX_DOCUMENT_BYTES", 20 * 1024 * 1024), 50000000),
                    min(positive(values, "ILIAS_TELEGRAM_MAX_MESSAGE_CHARS", 4000), 4096),
-                   Path(values.get("ILIAS_MONITOR_STATE_DIR") or "~/.local/share/ilias-check/monitor"), reminders)
+                   Path(values.get("ILIAS_MONITOR_STATE_DIR") or "~/.local/share/ilias-check/monitor"), reminders,
+                   extra)
 
 
 def safe_link(url):
@@ -80,7 +126,7 @@ class TelegramClient:
     def call(self, method, payload, files=None):
         if not self.config.enabled:
             raise TelegramError("telegram_disabled")
-        if method not in {"sendMessage", "sendDocument", "getUpdates", "answerCallbackQuery"}:
+        if method not in {"sendMessage", "sendDocument", "getUpdates", "answerCallbackQuery", "setMyCommands"}:
             raise TelegramError("telegram_method_refused")
         try:
             options = {"data": {k: json.dumps(v) if isinstance(v, (dict, list)) else v for k, v in payload.items()}, "files": files} if files else {"json": payload}
@@ -114,11 +160,14 @@ class TelegramClient:
             raise TelegramError("telegram_document_too_large")
         link = activity.get("url") if safe_link(activity.get("url")) else "Abra o ILIAS."
         association = entry["associations"].get(activity["exercise_id"] + ":" + str(activity["assignment_id"]), {})
-        caption = (f"Cópia de apoio — {activity['title'][:180]}\nBaixada: {entry['downloaded_at']}\n"
-                   f"Validada: {entry['last_validated_at']}\nExpira: {association.get('expires_at', 'não resolvido')}\n"
+        caption = (f"Cópia de apoio — {activity['title'][:180]}\nBaixada: {format_time(entry['downloaded_at'])}\n"
+                   f"Validada: {format_time(entry['last_validated_at'])}\nExpira: {format_time(association.get('expires_at'))}\n"
                    f"ILIAS é a fonte oficial e pode estar mais atualizado. Cópias já enviadas não podem ser revogadas.\n{link}")
         return self.call("sendDocument", {"chat_id": self.config.chat_id, "caption": caption[:1024]},
                          files={"document": ("material" + _extension(entry["media_type"]), source, entry["media_type"])})
+
+    def set_commands(self, commands):
+        return self.call("setMyCommands", {"commands": list(commands)})
 
     def updates(self, offset):
         return self.call("getUpdates", {"offset": offset, "timeout": 25, "limit": 25, "allowed_updates": ["message", "callback_query"]})
@@ -132,11 +181,12 @@ def _extension(media):
     return next((s for s, m in _TYPES.items() if m == media), ".bin")
 
 
-def activity_message(activity, checked_at, incomplete=False, stale=False):
+def activity_message(activity, checked_at, incomplete=False, stale=False, timezone_name=None):
     labels = {"pending": "Pendente", "submitted": "Entregue (aprovação não presumida)",
               "closed_without_submission": "Encerrada sem entrega", "excluded": "Fora do filtro de uploads",
               "not_yet_open": "Ainda não aberta", "unknown": "Inconclusivo — precisa verificar"}
-    lines = [labels[activity["status"]], activity["title"], f"Observado em: {checked_at}"]
+    lines = [labels[activity["status"]], activity["title"],
+             f"Observado em: {format_time(checked_at, timezone_name)}"]
     reasons = {
         "accepting_without_submission": "A atividade aceita arquivos e não há entrega confirmada.",
         "personal_submission_confirmed": "Há uma entrega pessoal confirmada no ILIAS.",
