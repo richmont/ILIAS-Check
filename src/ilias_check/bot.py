@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from collections import Counter, deque
+from contextlib import ExitStack
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 import hashlib
@@ -299,7 +300,7 @@ class Bot:
             buttons += self.state.material_buttons(activity, self.clock())
         text = activity_message(activity, checked, self._incomplete(snapshot), stale, self._timezone())
         if any("callback_data" in button for row in buttons for button in row):
-            disclosure = "Baixar autoriza o envio dessa cópia pelo Telegram após nova verificação no ILIAS."
+            disclosure = "Baixar autoriza o envio dessa cópia pelo Telegram. O bot tenta o cache válido primeiro e verifica o ILIAS se necessário."
             available = max(0, self.telegram.max_message_chars - len(disclosure) - 2)
             text = text[:available] + "\n\n" + disclosure
         self.client.message(text, buttons)
@@ -382,7 +383,7 @@ class Bot:
                             "callback_data": self._token("materials_page", (page + 1,), uid)})
             buttons.append(nav)
         self.client.message("Ao tocar em um material, você autoriza enviar essa cópia pelo Telegram. Isso não ativa anexos automáticos futuros. "
-                            "O envio exige nova verificação no ILIAS; ele pode estar mais atualizado. Cópias já enviadas não podem ser revogadas. "
+                            "O bot tenta o cache válido primeiro e verifica o ILIAS se necessário; a fonte pode estar mais atualizada. Cópias já enviadas não podem ser revogadas. "
                             f"Página {page}/{page_count}." if buttons else
                             "Nenhum apoio confirmado disponível. Confira a atividade no ILIAS ou /verificar.", buttons)
 
@@ -419,28 +420,55 @@ class Bot:
                 self._all(payload[0], uid)
             return
         aid, document_id = payload
-        now = self.clock()
-        last_check = self.state.cursor("support_check_at")
-        if last_check and now.timestamp() - last_check < 300:
-            self.client.message("Uma verificação de materiais já foi feita recentemente. Aguarde cinco minutos e consulte o ILIAS.")
-            return
-        self.last_check = now
-        previous = self.state.db.execute("SELECT activity FROM observations WHERE id=?", (aid,)).fetchone()
-        activity = json.loads(previous["activity"]) if previous else None
+        activity = None
         try:
             with self.state.run_lock():
-                self.state.set_cursor("support_check_at", int(now.timestamp()))
                 config = effective_config(self.config, self.state)
+                previous = self.state.db.execute("SELECT * FROM observations WHERE id=?", (aid,)).fetchone()
+                activity = json.loads(previous["activity"]) if previous else None
+                self.client.message("Verificando o cache local para enviar o documento…")
+                # Cache hits need no collector/login and do not consume the source
+                # refresh throttle. Only the latest current observation can permit one.
+                if previous and previous["current"] and self._send_cached(
+                        config, document_id, activity, previous["checked_at"]):
+                    return
+                now = self.clock()
+                last_check = self.state.cursor("support_check_at")
+                if last_check and now.timestamp() - last_check < 300:
+                    self.client.message("Nenhuma cópia local elegível está pronta. Uma verificação de materiais já foi feita recentemente; aguarde cinco minutos e abra o material novamente.", source_buttons(activity) if activity else [])
+                    return
+                self.last_check = now
+                self.state.set_cursor("support_check_at", int(now.timestamp()))
+                self.client.message("Não há cópia local pronta para envio. Vou verificar a atividade e o material no ILIAS; isso pode levar alguns minutos.")
                 # The scan observes metadata only; consent covers only the selected material.
                 inventory = self.collector(replace(config, cache_policy=replace(config.cache_policy, enabled=False)))
                 self.state.observe(inventory, self.clock(), self.telegram.reminder_hours, self.telegram.send_documents)
-                activity = next((a for a in inventory["activities"] if association_id(a) == aid), None)
-                material = next((m for m in activity.get("support_documents", []) if m["document_id"] == document_id and m["selected_for_support"] and m["role"] == "support"), None) if activity else None
-                if not activity or activity["status"] != "pending" or not material:
+                refreshed = next((a for a in inventory["activities"] if association_id(a) == aid), None)
+                material = next((m for m in refreshed.get("support_documents", []) if m["document_id"] == document_id and m["selected_for_support"] and m["role"] == "support"), None) if refreshed else None
+                if not refreshed or refreshed["status"] != "pending" or not material:
                     raise CacheError("Eligibility not confirmed.")
+                activity = refreshed
                 self.retrieve(config, inventory, activity, material)
+        except TelegramError as exc:
+            text = ("O arquivo excede o limite de envio pelo Telegram." if str(exc) == "telegram_document_too_large" else
+                    "Não foi possível confirmar o envio pelo Telegram. Abra o material novamente para tentar; o ILIAS continua sendo a fonte oficial.")
+            self.client.message(text, source_buttons(activity) if activity else [])
         except Exception:
             self.client.message("Não foi possível confirmar uma cópia elegível agora. Consulte o ILIAS e /verificar; nenhum estado da atividade foi alterado.", source_buttons(activity) if activity else [])
+
+    def _send_cached(self, config, document_id, activity, checked_at):
+        if not config.cache_policy.directory.expanduser().exists():
+            return False
+        # Catch only failure to open an eligible local copy. An upload failure
+        # must not trigger another collection/download or a second send attempt.
+        with ExitStack() as stack:
+            try:
+                source, entry = stack.enter_context(
+                    SupportCache(config, self.clock).delivery(document_id, activity, checked_at))
+            except (CacheError, OSError, ValueError):
+                return False
+            self.client.document(source, entry, activity, checked_at, self._timezone())
+        return True
 
     def _retrieve(self, config, inventory, activity, material):
         for a in inventory["activities"]:

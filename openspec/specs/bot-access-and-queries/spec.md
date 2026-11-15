@@ -102,7 +102,7 @@ Pending activity details SHALL offer up to two selected-support download buttons
 
 #### Scenario: Metadata-only worksheet
 - **WHEN** a pending activity has an explicitly selected support worksheet with no cached body
-- **THEN** opening its details offers its download button and a click rechecks ILIAS before retrieving and transmitting only that worksheet
+- **THEN** opening its details offers its download button and a click retrieves and transmits only that worksheet after any necessary ILIAS eligibility check
 
 #### Scenario: Durable token after restart
 - **WHEN** an authorized user presses an unexpired durable material button after worker restart
@@ -121,3 +121,25 @@ Transient navigation buttons SHALL be user-bound, single-use, and expire after t
 #### Scenario: Expired or forwarded navigation
 - **WHEN** a user presents another user's navigation token or replays an expired or consumed token
 - **THEN** no activity details or documents are returned through that token
+
+### Requirement: Serve valid local support before source refresh
+An authorized material click SHALL first try the account-scoped local cache using current stored activity evidence. A valid copy SHALL be sent without collection, authentication, or another body download, even when automatic downloads are disabled. Local delivery SHALL retain the existing gate: current pending observation at most fifteen minutes old, selected support association, integrity, expiry, and configured validation interval.
+
+#### Scenario: Valid cached worksheet
+- **WHEN** a current pending observation selects an intact, unexpired, recently validated cached worksheet
+- **THEN** the button sends that local copy without ILIAS requests and without consuming or being blocked by the five-minute source-refresh throttle
+
+#### Scenario: Stale or invalid local evidence
+- **WHEN** the copy is missing, expired, corrupt, no longer selected, or its activity or validation evidence is too old
+- **THEN** the old bytes are not sent; a permitted bounded source refresh may establish eligibility and retrieve only the selected material
+
+### Requirement: Visible material-request progress and failures
+A material request SHALL give a chat response before checking the cache and before any slow source refresh. Upload failures SHALL produce a safe source-linked message without triggering another collection or automatic duplicate upload. Expired buttons and refresh throttling SHALL produce actionable responses instead of silent completion.
+
+#### Scenario: Slow source check after cache miss
+- **WHEN** a material click requires a full source refresh
+- **THEN** the bot first explains that the check can take several minutes rather than only dismissing the callback loading animation
+
+#### Scenario: Ambiguous cached upload outcome
+- **WHEN** Telegram cannot confirm acceptance of a locally cached file
+- **THEN** the bot reports the uncertain send and offers the source without fetching or sending another copy automatically

@@ -466,6 +466,11 @@ software. Consulte [comandos do Telegram](https://core.telegram.org/bots/feature
 Ao terminar o teste em primeiro plano, use **Ctrl+C** para parar o worker antes
 de iniciar o serviço da próxima etapa.
 
+Os botões de documento tentam primeiro a cópia válida no cache local. Se a
+observação da atividade ou a validação do arquivo estiver antiga, ou a cópia
+estiver ausente ou inválida, o bot avisa que fará uma verificação no ILIAS que
+pode levar vários minutos antes de tentar obter o material na fonte.
+
 ## 10. Mantenha o worker ativo com systemd de usuário
 
 Esta etapa é opcional para testes, mas útil em um host que ficará ligado.

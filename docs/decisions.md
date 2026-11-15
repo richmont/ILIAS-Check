@@ -255,7 +255,8 @@ The following session decisions are reflected in the main capability specs:
   expand all detail messages. Material pagination uses buttons too, ten per page.
 - Pending details expose up to two selected-support download buttons, including
   metadata-only references. Clicking authorizes only the selected transmission,
-  after a fresh ILIAS eligibility check. The compact monitor summary points to
+  after eligibility checks, preferring a valid local copy before any necessary ILIAS
+  refresh. The compact monitor summary points to
   `/pendentes` for these actions. Existing durable material tokens expire after
   24 hours, are single-use, and survive worker restart without bypassing checks.
 - Submitted-history and needs-verification detail buttons retain their view's
@@ -264,3 +265,22 @@ The following session decisions are reflected in the main capability specs:
 
 These refinements were verified with offline transports. They do not install or
 restart services, edit host credentials, schedule jobs, or send live messages.
+
+## 13. Cache-first document buttons and visible progress
+
+An authorized document click first attempts local delivery from the latest stored
+pending observation. A valid cached copy does not trigger login, traversal, another
+body download, or the five-minute source-refresh throttle. Automatic caching and
+automatic document notifications can stay disabled: the click authorizes this copy.
+
+This changes retrieval order, not validity requirements. The existing gate still
+requires a current pending observation at most fifteen minutes old, a selected support
+association, a recently validated file, integrity, and unexpired retention/deadline.
+If these checks fail, a bounded source refresh can re-establish eligibility; expired,
+unknown, missing, or submitted evidence never authorizes old bytes by itself.
+
+The bot responds before local work and announces a potentially slow source scan
+before starting it. A dismissed callback spinner alone is insufficient feedback.
+An upload failure gets a safe source-linked response and cannot trigger a second
+collection/download/upload automatically in that request. Validation uses synthetic
+cached PDF bytes and fake Telegram transports, with no real course-document send.

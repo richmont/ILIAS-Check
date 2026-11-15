@@ -168,8 +168,8 @@ ordinary pagination never does so. `/materiais` also uses navigation buttons.
 
 Eligible support files appear as up to two `Baixar: …` buttons under a pending
 activity's **detail**, including metadata-only references. The disclosure explains
-that a click authorizes the selected transmission through Telegram after a new
-ILIAS check. The monitor summary points to `/pendentes` instead of sending individual
+that a click authorizes only the selected transmission through Telegram. The bot
+tries a valid local copy first and checks ILIAS only when necessary. The monitor summary points to `/pendentes` instead of sending individual
 activity details or download-button messages. Automatic attachments still require
 the separate sharing setting.
 
@@ -186,9 +186,19 @@ bytes. Quota is host-only, default **200 MB decimal**, shared across cache accou
 No purge, clear-cache, quota, credential, destination or path setter exists. Local
 maintenance ticks hourly and never trigger an extra full ILIAS scan.
 
-A material request first performs a fresh bounded source check. Only the selected
-support is fetched; submitted/unknown/ended work, answers and model solutions are
-refused. The final delivery gate rechecks current association, retention and checksum
+A material request responds in the chat immediately, then tries the local cache
+using the latest stored observation. A valid local hit sends the selected bytes
+without login, collection, or another download, including when automatic caching
+is disabled. It does not consume or wait for the five-minute source-refresh throttle.
+The existing delivery gate still requires a current pending observation no more than
+fifteen minutes old, selected support, intact bytes, unexpired association, and file
+validation within `ILIAS_SUPPORT_REVALIDATE_HOURS` (default twelve hours).
+
+When that gate cannot admit a local copy, the bot announces the potentially slow
+bounded ILIAS check before collection. Only the selected support is fetched;
+submitted/unknown/ended work, answers and model solutions are refused. A Telegram
+upload failure is reported with source navigation and never triggers an automatic
+second download or upload in that request. The final delivery gate rechecks current association, retention and checksum
 under a reader lock. Captions give copy/validation/expiry times and the original
 activity source. ILIAS may be newer; already delivered copies cannot be revoked.
 An ongoing accepted transfer may finish after local expiry; a new transfer may not start.

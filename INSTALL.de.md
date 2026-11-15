@@ -480,6 +480,11 @@ Siehe [Telegram-Befehle](https://core.telegram.org/bots/features#commands).
 Wenn Sie den Vordergrundtest beenden, drücken Sie **Strg+C**, um den Worker zu stoppen,
 bevor Sie den Dienst im nächsten Schritt starten.
 
+Dokument-Schaltflächen versuchen zuerst, eine gültige lokale Cache-Kopie zu
+verwenden. Sind Aktivitätsdaten oder Dateiprüfung zu alt, fehlt die Kopie oder ist
+sie ungültig, kündigt der Bot eine möglicherweise mehrere Minuten dauernde
+ILIAS-Prüfung an, bevor er das Material von der Quelle abruft.
+
 ## 10. Worker mit systemd auf Benutzerebene betreiben
 
 Dieser Schritt ist für Tests optional, aber nützlich auf einem dauerhaft laufenden

@@ -468,6 +468,10 @@ That configures suggestions only; the software still enforces authorization. See
 When you finish the foreground test, press **Ctrl+C** to stop the worker before
 starting the service in the next step.
 
+Document buttons try the valid local cache first. If current activity evidence or
+file validation is too old, or the copy is missing or invalid, the bot announces an
+ILIAS check that can take several minutes before trying source retrieval.
+
 ## 10. Keep the worker running with user-level systemd
 
 This step is optional for testing but useful on a host that stays powered on. Run it

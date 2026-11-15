@@ -998,3 +998,128 @@ def test_history_and_document_caption_times_follow_course_zone(config, telegram)
     assert 'Baixada: 14/11/2026 01:00' in payload['caption']
     assert 'Validada: 14/11/2026 01:00' in payload['caption']
     assert 'Expira: 15/11/2026 01:00' in payload['caption']
+
+
+@pytest.fixture
+def cached_material(config):
+    """A real private cache entry with synthetic bytes, not a mocked delivery gate."""
+    from ilias_check.materials import document_reference
+    from ilias_check.support_cache import cache_inventory
+    body = b'%PDF-1.7\nsynthetic cached worksheet\n%%EOF'
+    class Response:
+        status_code = 200
+        headers = {'Content-Type': 'application/pdf', 'Content-Length': str(len(body))}
+        def iter_content(self, chunk_size=65536): yield body
+        def close(self): pass
+    class Source:
+        def stream_document(self, material, headers): return Response()
+    data = inventory()
+    material = document_reference(
+        'https://ilias.example/ilias/goto.php?target=file_9_download&client_id=demo',
+        'worksheet.pdf', '1', '2', data['activities'][0]['url'], config.base_url, config.client_id,
+        'assignment_attachment', 'support', 'Files')
+    material['selected_for_support'] = True
+    data['activities'][0]['support_documents'] = [material]
+    enabled = replace(config, cache_policy=replace(config.cache_policy, enabled=True))
+    result = cache_inventory(data, enabled, Source(), lambda: NOW)
+    assert result['activities'][0]['support_documents'][0]['cache']['eligible']
+    return result, body
+
+
+@pytest.mark.parametrize('menu', ['/materiais', '/pendentes'])
+def test_button_serves_real_valid_cache_without_collection_or_refresh_throttle(config, telegram, cached_material, menu):
+    data, body = cached_material
+    class ReadingClient(Client):
+        def document(self, source, *args):
+            self.documents.append(source.read())
+    def unexpected(*args): pytest.fail('A cache hit must not collect, authenticate or download again')
+    with MonitorState(config, telegram.state_dir).open() as state:
+        state.observe(data, NOW)
+        state.set_cursor('support_check_at', int(NOW.timestamp()))
+        client = ReadingClient(); bot = Bot(config, telegram, state, client, lambda: NOW, unexpected, unexpected)
+        bot.handle(update(menu))
+        if menu == '/pendentes':
+            bot.handle(update(uid=2, callback=client.messages[-1][1][-1][0]['callback_data']))
+        token = next(button['callback_data'] for row in client.messages[-1][1] for button in row
+                     if button['text'].startswith('Baixar'))
+        bot.handle(update(uid=3, callback=token))
+        assert client.documents == [body]
+        assert 'cache local' in client.messages[-1][0]
+        # A second explicit request can also reuse the cache inside five minutes.
+        bot.handle(update('/materiais', uid=4))
+        token = client.messages[-1][1][0][0]['callback_data']
+        bot.handle(update(uid=5, callback=token))
+        assert client.documents == [body, body]
+        bot.handle(update(uid=6, callback=token))
+        assert client.documents == [body, body] and 'Ação expirada' in client.messages[-1][0]
+
+
+def test_cache_miss_announces_source_check_before_blocking_collection(config, telegram):
+    data = inventory()
+    data['activities'][0]['support_documents'] = [
+        {'document_id': 'file:9', 'title': 'Blatt.pdf', 'selected_for_support': True, 'role': 'support', 'state': 'metadata_only'}]
+    client = Client(); calls = []
+    def collector(c):
+        assert 'pode levar alguns minutos' in client.messages[-1][0]
+        assert not c.cache_policy.enabled
+        calls.append(c)
+        return deepcopy(data)
+    with MonitorState(config, telegram.state_dir).open() as state:
+        state.observe(data, NOW)
+        bot = Bot(config, telegram, state, client, lambda: NOW, collector, lambda *args: calls.append('retrieve'))
+        bot.handle(update('/materiais'))
+        bot.handle(update(uid=2, callback=client.messages[-1][1][0][0]['callback_data']))
+        assert len(calls) == 2 and calls[-1] == 'retrieve'
+        assert not config.cache_policy.directory.exists()  # A miss does not create an empty store.
+
+
+@pytest.mark.parametrize('ineligible', ['stale', 'expired', 'unvalidated', 'corrupt', 'unselected', 'unknown', 'missing', 'submitted'])
+def test_invalid_cached_copy_is_not_served_before_source_refresh(config, telegram, cached_material, ineligible):
+    data, body = cached_material
+    now = NOW
+    if ineligible == 'stale': now += timedelta(minutes=16)
+    if ineligible == 'expired': now += timedelta(hours=169)
+    if ineligible == 'unvalidated': now += timedelta(hours=13)
+    if ineligible in {'expired', 'unvalidated'}: data['checked_at'] = stamp(now)
+    if ineligible == 'corrupt':
+        cache_path = Path(data['activities'][0]['support_documents'][0]['cache']['path'])
+        cache_path.write_bytes(b'corrupted cached bytes')
+    with MonitorState(config, telegram.state_dir).open() as state:
+        state.observe(data, now)
+        token = state.material_buttons(data['activities'][0], now)[0][0]['callback_data']
+        activity = data['activities'][0]
+        if ineligible == 'unselected':
+            activity['support_documents'][0]['selected_for_support'] = False
+            state.observe(data, now)
+        elif ineligible in {'unknown', 'submitted'}:
+            activity['status'] = ineligible
+            state.observe(data, now)
+        elif ineligible == 'missing':
+            missing = deepcopy(data); missing['activities'] = []
+            state.observe(missing, now)
+        calls = []
+        def collector(c):
+            calls.append(c)
+            return inventory('submitted', now=now)
+        client = Client(); bot = Bot(config, telegram, state, client, lambda: now, collector)
+        bot.handle(update(callback=token))
+        assert calls and not client.documents
+        assert 'Não foi possível confirmar' in client.messages[-1][0]
+
+
+def test_cached_upload_failure_does_not_trigger_collection_or_second_send(config, telegram, cached_material):
+    data, _ = cached_material
+    class FailingUpload(Client):
+        def document(self, *args):
+            self.documents.append(args)
+            raise TelegramError(uncertain=True)
+    def unexpected(*args): pytest.fail('Upload failure must not fetch or send a second copy')
+    with MonitorState(config, telegram.state_dir).open() as state:
+        state.observe(data, NOW)
+        client = FailingUpload(); bot = Bot(config, telegram, state, client, lambda: NOW, unexpected, unexpected)
+        bot.handle(update('/materiais'))
+        bot.handle(update(uid=2, callback=client.messages[-1][1][0][0]['callback_data']))
+        assert len(client.documents) == 1
+        assert 'confirmar o envio pelo Telegram' in client.messages[-1][0]
+        assert client.messages[-1][1][0][0]['text'] == 'Abrir no ILIAS'
+        assert not state.cursor('support_check_at')
