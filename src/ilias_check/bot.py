@@ -1,7 +1,7 @@
 """Single-owner Portuguese long-poll worker over shared observations and cache."""
 from __future__ import annotations
 
-from collections import deque
+from collections import Counter, deque
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 import hashlib
@@ -21,16 +21,37 @@ from ilias_check.transport import SafeTransport
 
 _ISSUES = "https://github.com/richmont/ILIAS-Check/issues/new"
 _HELP = ("/pendentes — uploads pendentes\n/entregues — histórico de entregas\n/encerradas — encerradas sem entrega\n"
-         "/verificar — inconclusivas\n/materiais — apoio disponível\n/configuracoes — retenção e uso\n"
+         "/futuras — ainda não abertas\n/verificar — inconclusivas\n/resumo — contagem por situação\n"
+         "/materiais — apoio disponível\n/configuracoes — retenção e uso\n"
          "/relatar — feedback sobre este software\n/cancelar — cancelar diálogo\n"
          "Os textos do ILIAS permanecem originais. A fonte pode exigir login no navegador. Entrega não significa aprovação. "
          "Envie respostas às atividades manualmente no ILIAS; arquivos recebidos aqui não são processados. "
          "Rascunhos de relatos são descartados após reinício ou 30 minutos.")
-_VIEWS = {"/pendentes": "pending", "/entregues": "submitted", "/encerradas": "closed_without_submission", "/verificar": "unknown"}
+_VIEWS = {"/pendentes": "pending", "/entregues": "submitted", "/encerradas": "closed_without_submission",
+          "/futuras": "not_yet_open", "/verificar": "unknown"}
+_TITLES = {"pending": "Pendentes", "submitted": "Entregues",
+           "closed_without_submission": "Encerradas sem entrega",
+           "not_yet_open": "Ainda não abertas", "unknown": "Inconclusivas"}
+_EMPTY = {
+    "pending": "Nenhuma atividade pendente confirmada; isso não confirma que todas estejam concluídas.",
+    "submitted": "Nenhuma entrega confirmada no histórico.",
+    "closed_without_submission": "Nenhuma atividade encerrada sem entrega registrada.",
+    "not_yet_open": "Nenhuma atividade com período ainda não aberto.",
+    "unknown": "Nenhuma atividade inconclusiva registrada.",
+}
+_STATUS_LABELS = (("pending", "pendentes"), ("submitted", "entregues"),
+                  ("closed_without_submission", "encerradas sem entrega"),
+                  ("not_yet_open", "ainda não abertas"), ("excluded", "excluídas"),
+                  ("unknown", "inconclusivas"))
 _FIELDS = ("descrição", "esperado", "ocorrido", "link")
 _PROMPTS = ("Descreva o problema deste software (somente texto, até 800 caracteres).",
             "Como você esperava que o bot se comportasse ou exibisse a atividade?",
             "O que o bot exibiu ou fez?", "Link original da atividade (HTTPS sem sessão), ou - para omitir.")
+
+
+def _counts_text(counts):
+    parts = [f"{counts[status]} {label}" for status, label in _STATUS_LABELS if counts.get(status)]
+    return ", ".join(parts)
 
 
 class Bot:
@@ -114,6 +135,8 @@ class Bot:
                 self._materials(page)
             elif command == "/configuracoes":
                 self._settings()
+            elif command == "/resumo":
+                self._summary()
             elif command == "/retencao":
                 self._retention(parts[1:])
             else:
@@ -154,11 +177,18 @@ class Bot:
         page = min(max(page, 1), page_count)
         snapshot = self.state.snapshot() or {}
         incomplete = not snapshot.get("observation_complete", False) or not snapshot.get("classification", {}).get("complete", False) or any(not c["complete"] for c in snapshot.get("coverage", []))
-        text = f"Observação mais recente: {snapshot.get('checked_at', 'nenhuma')}. Página {page}/{page_count}."
-        if incomplete:
-            text += " Verificação incompleta; consulte /verificar."
+        text = (f"{_TITLES[status]} — observação de {snapshot.get('checked_at', 'nenhuma')}; "
+                f"página {page}/{page_count}.")
         if not rows:
-            text += " Nenhuma atividade confirmada nesta categoria; isso não confirma que todas estejam concluídas."
+            text += " " + _EMPTY[status]
+            counts = self._counts(snapshot)
+            if counts:
+                text += f" Resumo: {_counts_text(counts)}; use /resumo."
+        if incomplete:
+            if status == "unknown":
+                text += " " + (self._health_text(snapshot) or "A última verificação não foi concluída.")
+            else:
+                text += " Verificação incompleta; detalhes em /verificar."
         self.client.message(text)
         for activity, checked, stale in rows[(page - 1) * 4:page * 4]:
             stale = stale or self.clock() - instant(checked) > timedelta(hours=12)
@@ -166,6 +196,41 @@ class Bot:
         if page < page_count:
             command = next((k for k, v in _VIEWS.items() if v == status), "/pendentes")
             self.client.message(f"Próxima página: {command} {page + 1}")
+
+    def _health_text(self, snapshot):
+        parts = []
+        incomplete = [item for item in snapshot.get("coverage", []) if not item.get("complete")]
+        if incomplete:
+            roots = ", ".join(str(item.get("root_id")) for item in incomplete)
+            parts.append("Cobertura incompleta no(s) root(s) " + roots + ".")
+            warnings = sorted({w for item in incomplete for w in item.get("warnings", [])})
+            if warnings:
+                shown = ", ".join(warnings[:4])
+                if len(warnings) > 4:
+                    shown += f" (+{len(warnings) - 4})"
+                parts.append("Avisos: " + shown + ".")
+        if not snapshot.get("activities"):
+            parts.append("A extração não registrou atividades; confira os roots configurados e o acesso ao curso.")
+        if not snapshot.get("classification", {}).get("complete", False):
+            parts.append("A classificação contém casos sem confirmação.")
+        if not snapshot.get("observation_complete", False) and not parts:
+            parts.append("A última verificação não foi concluída.")
+        return " ".join(parts)
+
+    def _counts(self, snapshot):
+        return Counter(activity.get("status") for activity in snapshot.get("activities", []))
+
+    def _summary(self):
+        snapshot = self.state.snapshot() or {}
+        counts = self._counts(snapshot)
+        if counts:
+            text = f"Resumo da observação de {snapshot.get('checked_at', 'nenhuma')}: {_counts_text(counts)}."
+        else:
+            text = f"Resumo da observação de {snapshot.get('checked_at', 'nenhuma')}: nenhuma atividade registrada."
+        health = self._health_text(snapshot)
+        if health:
+            text += " " + health
+        self.client.message(text)
 
     def _materials(self, page=1):
         candidates = [(activity, material) for activity, _, stale in self._observations("pending") if not stale

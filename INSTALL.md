@@ -291,8 +291,13 @@ cd /opt/ilias/check
 umask 077
 /opt/ilias/venv/bin/ilias-check collect \
   --env-file /opt/ilias/data/ilias.env \
+  --progress \
   > "/opt/ilias/data/inventory.json"
 ```
+
+`--progress` (also accepted by `monitor`) prints throttled request/object counts,
+current root and elapsed time to stderr. The JSON on stdout stays clean, and the
+progress lines never include titles, URLs or credentials.
 
 Then inspect inconclusive cases locally:
 
@@ -406,7 +411,9 @@ Initial commands:
 | `/pendentes` | Confirmed pending uploads. |
 | `/entregues` | Submission history; approval is not implied. |
 | `/encerradas` | Closed without submission. |
+| `/futuras` | Period not open yet. |
 | `/verificar` | Inconclusive cases, source and feedback invitation. |
+| `/resumo` | Count per situation and coverage warnings. |
 | `/configuracoes` | Retention and cache usage/quota. |
 | `/materiais` | Selectable materials; tapping one authorizes sending that copy through Telegram. |
 | `/relatar` | Reviewable report about the software; no issue is opened automatically. |

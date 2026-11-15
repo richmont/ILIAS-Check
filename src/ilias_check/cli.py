@@ -14,6 +14,7 @@ from ilias_check.monitor import run_monitor
 from ilias_check.bot import run_bot
 from ilias_check.config import CollectorConfig, ConfigurationError, load_environment
 from ilias_check.policy import ClassificationPolicy, PolicyError
+from ilias_check.progress import Progress
 from ilias_check.results import SELECTIONS, classify_inventory, select_activities
 
 def build_parser() -> argparse.ArgumentParser:
@@ -31,6 +32,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="explicit dotenv file (no automatic .env discovery)",
     )
     collect.add_argument("--select", choices=SELECTIONS, default="all", help="activity category (full coverage and counts are retained)")
+    collect.add_argument(
+        "--progress",
+        action="store_true",
+        help="write low-noise extraction progress to stderr",
+    )
     classify = subparsers.add_parser("classify", help="classify a saved inventory without network access")
     classify.add_argument("--input", required=True, type=Path, help="saved inventory JSON")
     classify.add_argument("--env-file", metavar="PATH", help="optional explicit file with classification settings")
@@ -38,6 +44,11 @@ def build_parser() -> argparse.ArgumentParser:
     monitor = subparsers.add_parser("monitor", help="one-shot check with durable opt-in notifications")
     monitor.add_argument("--env-file", metavar="PATH")
     monitor.add_argument("--dry-run", action="store_true", help="preview without sending or acknowledging events")
+    monitor.add_argument(
+        "--progress",
+        action="store_true",
+        help="write low-noise extraction progress to stderr",
+    )
     bot = subparsers.add_parser("bot", help="authorized private-chat long-poll worker")
     bot.add_argument("--env-file", metavar="PATH")
     return parser
@@ -64,12 +75,23 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "bot":
             run_bot(config, telegram)
             return 0
+        progress = Progress() if getattr(args, "progress", False) else None
         if args.command == "monitor":
-            report = run_monitor(config, telegram, args.dry_run)
+            if progress is None:
+                report = run_monitor(config, telegram, args.dry_run)
+            else:
+                report = run_monitor(
+                    config,
+                    telegram,
+                    args.dry_run,
+                    collector=lambda run_config: collect_inventory(
+                        run_config, progress=progress
+                    ),
+                )
             sys.stdout.write(json.dumps(report, ensure_ascii=False, indent=2) + "\n")
             return 1 if report["fatal"] else 0 if report["complete"] else 2
         if args.command == "collect":
-            inventory = collect_inventory(config)
+            inventory = collect_inventory(config, progress=progress)
         else:
             inventory = classify_inventory(json.loads(args.input.read_text(encoding="utf-8")), policy)
         inventory = select_activities(inventory, args.select)

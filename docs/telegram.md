@@ -39,6 +39,8 @@ Dry run can perform authorized ILIAS reads and opt-in local cache work. It plans
 in a temporary database copy, sends nothing and does not consume/acknowledge durable
 notifications. Disabled Telegram never calls its API. The command reports counts and
 qualified completeness, without course titles or secrets in diagnostic output.
+Add `--progress` to stream throttled request/object counts and elapsed time to stderr
+while the crawl runs; the JSON report on stdout stays clean.
 Exit codes: 0 complete, 2 incomplete, 1 failed/configuration error, 3 overlapping
 private-state operation. Network work is bounded by request/depth budgets and finite
 request/stream timeouts. At most 50 due components are attempted in one invocation.
@@ -117,7 +119,9 @@ by collector limits and throttled to one per five minutes across worker restarts
 | `/pendentes [page]` | Confirmed pending file uploads, with stale warnings |
 | `/entregues [page]` | Historical personal/team delivery metadata; approval separate |
 | `/encerradas [page]` | Closed without submission |
+| `/futuras [page]` | Period not open yet |
 | `/verificar [page]` | “Inconclusivo — precisa verificar”, reasons/time/source and feedback invitation |
+| `/resumo` | Count per situation plus coverage warnings |
 | `/materiais [page]` | Explicit selected-material transmission request |
 | `/configuracoes` | Retention, measured managed usage/quota/time without host paths |
 | `/retencao sem_prazo 24` | Positive no-deadline retention hours |

@@ -236,6 +236,33 @@ def test_original_source_unknown_feedback_and_honest_history(config, telegram):
         assert "não confirma" in client.messages[-1][0]
 
 
+def test_views_name_the_category_and_verify_explains_coverage(config, telegram):
+    with MonitorState(config, telegram.state_dir).open() as state:
+        state.observe(inventory("unknown", complete=False), NOW)
+        client = Client(); bot = Bot(config, telegram, state, client, lambda: NOW)
+        bot.handle(update("/verificar"))
+        header = client.messages[0][0]
+        assert header.startswith("Inconclusivas — observação de")
+        assert "Cobertura incompleta" in header and "root(s) 1" in header
+        assert "consulte /verificar" not in header
+        bot.handle(update("/pendentes", uid=2))
+        pending = client.messages[-1][0]
+        assert pending.startswith("Pendentes — observação de")
+        assert "detalhes em /verificar" in pending
+
+
+def test_empty_categories_have_specific_messages(config, telegram):
+    with MonitorState(config, telegram.state_dir).open() as state:
+        state.observe(inventory("submitted"), NOW)
+        client = Client(); bot = Bot(config, telegram, state, client, lambda: NOW)
+        bot.handle(update("/pendentes"))
+        assert "Nenhuma atividade pendente confirmada" in client.messages[-1][0]
+        bot.handle(update("/encerradas", uid=2))
+        assert "Nenhuma atividade encerrada sem entrega" in client.messages[-1][0]
+        bot.handle(update("/verificar", uid=3))
+        assert "Nenhuma atividade inconclusiva registrada" in client.messages[-1][0]
+
+
 def test_history_retained_after_reopen_and_missing_observation_marked_old(config, telegram):
     with MonitorState(config, telegram.state_dir).open() as state:
         state.observe(inventory("submitted"), NOW)
@@ -585,3 +612,32 @@ def test_actionable_message_explains_pending_reason_and_contextual_support():
     text = activity_message(activity, stamp(NOW))
     assert "aceita arquivos e não há entrega confirmada" in text
     assert "Unterlagen.pdf (contextual; cópia disponível)" in text
+
+
+def test_summary_lists_counts_and_explains_empty_extraction(config, telegram):
+    with MonitorState(config, telegram.state_dir).open() as state:
+        state.observe(inventory("pending"), NOW)
+        client = Client(); bot = Bot(config, telegram, state, client, lambda: NOW)
+        bot.handle(update("/resumo"))
+        text = client.messages[-1][0]
+        assert text.startswith("Resumo da observação de")
+        assert "1 pendentes" in text
+
+        empty = dict(inventory("pending"), activities=[], classification={"complete": False, "counts": {}},
+                     coverage=[{"root_id": "1", "complete": False,
+                                "warnings": ["maximum_depth_reached"]}])
+        state.observe(empty, NOW + timedelta(minutes=1))
+        bot.handle(update("/resumo", uid=2))
+        text = client.messages[-1][0]
+        assert "nenhuma atividade registrada" in text
+        assert "A extração não registrou atividades" in text
+        assert "maximum_depth_reached" in text
+
+
+def test_futuras_lists_not_yet_open_activities(config, telegram):
+    with MonitorState(config, telegram.state_dir).open() as state:
+        state.observe(inventory("not_yet_open"), NOW)
+        client = Client(); bot = Bot(config, telegram, state, client, lambda: NOW)
+        bot.handle(update("/futuras"))
+        assert client.messages[0][0].startswith("Ainda não abertas — observação de")
+        assert any("Übung <b>Original</b>" in text for text, _ in client.messages)

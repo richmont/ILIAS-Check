@@ -290,8 +290,13 @@ cd /opt/ilias/check
 umask 077
 /opt/ilias/venv/bin/ilias-check collect \
   --env-file /opt/ilias/data/ilias.env \
+  --progress \
   > "/opt/ilias/data/inventory.json"
 ```
+
+`--progress` (também aceito por `monitor`) mostra contagens limitadas de requisições
+e objetos, o root atual e o tempo decorrido no stderr. O JSON no stdout permanece
+limpo, e as linhas de progresso nunca incluem títulos, URLs ou credenciais.
 
 Depois, consulte os casos inconclusivos localmente:
 
@@ -404,7 +409,9 @@ Comandos iniciais:
 | `/pendentes` | Uploads pendentes confirmados. |
 | `/entregues` | Histórico de entregas; não presume aprovação. |
 | `/encerradas` | Encerradas sem entrega. |
+| `/futuras` | Período ainda não aberto. |
 | `/verificar` | Inconclusivas, fonte e convite a feedback. |
+| `/resumo` | Contagem por situação e avisos de cobertura. |
 | `/configuracoes` | Retenção e uso/quota do cache. |
 | `/materiais` | Materiais selecionáveis; tocar em um autoriza o envio daquela cópia pelo Telegram. |
 | `/relatar` | Relato revisável sobre o software; nenhuma issue é aberta automaticamente. |

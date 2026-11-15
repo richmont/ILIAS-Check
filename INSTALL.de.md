@@ -299,8 +299,13 @@ cd /opt/ilias/check
 umask 077
 /opt/ilias/venv/bin/ilias-check collect \
   --env-file /opt/ilias/data/ilias.env \
+  --progress \
   > "/opt/ilias/data/inventory.json"
 ```
+
+`--progress` (auch von `monitor` akzeptiert) zeigt gedrosselte Zähler für Anfragen und
+Objekte, den aktuellen Root und die verstrichene Zeit auf stderr. Das JSON auf stdout
+bleibt sauber; die Fortschrittszeilen enthalten nie Titel, URLs oder Zugangsdaten.
 
 Prüfen Sie dann unklare Fälle lokal:
 
@@ -416,7 +421,9 @@ Erste Befehle:
 | `/pendentes` | Bestätigte ausstehende Uploads. |
 | `/entregues` | Abgabehistorie; keine Freigabe impliziert. |
 | `/encerradas` | Ohne Abgabe geschlossen. |
+| `/futuras` | Zeitraum noch nicht geöffnet. |
 | `/verificar` | Unklare Fälle, Quelle und Feedback-Einladung. |
+| `/resumo` | Zählung je Situation und Abdeckungswarnungen. |
 | `/configuracoes` | Aufbewahrung und Cache-Nutzung/Quote. |
 | `/materiais` | Auswählbare Materialien; Antippen autorisiert das Senden dieser Kopie über Telegram. |
 | `/relatar` | Prüfbarer Bericht über die Software; es wird kein Issue automatisch geöffnet. |

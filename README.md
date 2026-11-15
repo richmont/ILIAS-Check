@@ -112,8 +112,13 @@ mkdir -p "$HOME/.local/share/ilias-check"
 .venv/bin/ilias-check collect \
   --env-file "$HOME/.config/ilias-check/ilias.env" \
   --select pending \
+  --progress \
   > "$HOME/.local/share/ilias-check/inventory.json"
 ```
+
+`--progress` (also accepted by `monitor`) prints throttled counts — requests, objects,
+current root and elapsed time — to stderr only. The JSON on stdout stays clean and the
+progress lines never include titles, URLs or credentials.
 
 Inspect uncertain activities from that saved inventory without accessing ILIAS:
 
@@ -170,10 +175,10 @@ private chat ID and allowed user ID; every command and callback checks authoriza
 Incoming answer files are not downloaded or forwarded to ILIAS.
 
 The Portuguese interface includes `/pendentes`, `/entregues`, `/encerradas`,
-`/verificar`, `/materiais`, `/configuracoes` and `/relatar`. A material button discloses
-transmission through Telegram and authorizes only that selected request. The report
-flow produces a reviewed draft for manual sharing; it opens no public issue and
-contacts no teacher or administrator.
+`/futuras`, `/verificar`, `/resumo`, `/materiais`, `/configuracoes` and `/relatar`.
+A material button discloses transmission through Telegram and authorizes only that
+selected request. The report flow produces a reviewed draft for manual sharing; it
+opens no public issue and contacts no teacher or administrator.
 
 The monitor and worker are separate processes. The monitor is suitable for an
 external schedule such as every twelve hours; unchanged work does not repeatedly
