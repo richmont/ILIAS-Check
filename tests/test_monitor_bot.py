@@ -229,11 +229,43 @@ def test_original_source_unknown_feedback_and_honest_history(config, telegram):
         client = Client(); bot = Bot(config, telegram, state, client, lambda: NOW)
         bot.handle(update("/verificar"))
         text = "\n".join(t for t, _ in client.messages)
+        assert "Inconclusivo" not in text and "Übung <b>Original</b>" in text and "precisa verificar" in text
+        bot.handle(update("/verificar 1", uid=2))
+        detail = client.messages[-1][1][-1][0]["callback_data"]
+        bot.handle(update(uid=3, callback=detail))
+        text = "\n".join(t for t, _ in client.messages)
         assert "Inconclusivo — precisa verificar" in text and "Übung <b>Original</b>" in text
         assert "Bitte laden Sie Ihre Datei hoch." in text and "/relatar" in text and "feedback não altera" in text
         assert client.messages[-1][1][0][0]["text"] == "Abrir no ILIAS"
-        bot.handle(update("/pendentes", uid=2))
+        bot.handle(update("/pendentes", uid=4))
         assert "não confirma" in client.messages[-1][0]
+
+
+def test_views_name_the_category_and_verify_explains_coverage(config, telegram):
+    with MonitorState(config, telegram.state_dir).open() as state:
+        state.observe(inventory("unknown", complete=False), NOW)
+        client = Client(); bot = Bot(config, telegram, state, client, lambda: NOW)
+        bot.handle(update("/verificar"))
+        header = client.messages[0][0]
+        assert header.startswith("Inconclusivas — 1 atividade; observação de")
+        assert "Cobertura incompleta" in header and "root(s) 1" in header
+        assert "consulte /verificar" not in header
+        bot.handle(update("/pendentes", uid=2))
+        pending = client.messages[-1][0]
+        assert pending.startswith("Pendentes — 0 atividades; observação de")
+        assert "detalhes em /verificar" in pending
+
+
+def test_empty_categories_have_specific_messages(config, telegram):
+    with MonitorState(config, telegram.state_dir).open() as state:
+        state.observe(inventory("submitted"), NOW)
+        client = Client(); bot = Bot(config, telegram, state, client, lambda: NOW)
+        bot.handle(update("/pendentes"))
+        assert "Nenhuma atividade pendente confirmada" in client.messages[-1][0]
+        bot.handle(update("/encerradas", uid=2))
+        assert "Nenhuma atividade encerrada sem entrega" in client.messages[-1][0]
+        bot.handle(update("/verificar", uid=3))
+        assert "Nenhuma atividade inconclusiva registrada" in client.messages[-1][0]
 
 
 def test_history_retained_after_reopen_and_missing_observation_marked_old(config, telegram):
@@ -242,8 +274,10 @@ def test_history_retained_after_reopen_and_missing_observation_marked_old(config
         state.observe(inventory(), NOW)
         client = Client(); bot = Bot(config, telegram, state, client, lambda: NOW)
         bot.handle(update("/entregues"))
-        assert any("aprovação não presumida" in text for text, _ in client.messages)
-        assert any("antiga" in text for text, _ in client.messages)
+        assert any("observação antiga" in text for text, _ in client.messages)
+        token = client.messages[-1][1][-1][0]["callback_data"]
+        bot.handle(update(uid=2, callback=token))
+        assert "aprovação não presumida" in client.messages[-1][0]
 
 
 def test_pagination_rate_limit_received_files_never_fetched(config, telegram):
@@ -253,14 +287,38 @@ def test_pagination_rate_limit_received_files_never_fetched(config, telegram):
         state.observe(data, NOW)
         client = Client(); bot = Bot(config, telegram, state, client, lambda: NOW)
         bot.handle(update("/pendentes"))
-        assert len(client.messages) == 6 and "Próxima página" in client.messages[-1][0]
-        bot.handle(update(None, uid=2))
+        assert len(client.messages) == 1
+        header, buttons = client.messages[0]
+        assert "10 atividades" in header and "página 1/2" in header
+        assert "5. Übung" in header and "6. Übung" not in header
+        assert [button["text"] for button in buttons[0]] == ["Próxima ▶"]
+        assert buttons[1][0]["text"] == "Exibir todas (10)"
+        assert [button["text"] for button in buttons[2]] == ["1", "2", "3", "4", "5"]
+        bot.handle(update(uid=2, callback=buttons[0][0]["callback_data"]))
+        assert "página 2/2" in client.messages[-1][0] and "10. Übung" in client.messages[-1][0]
+        bot.handle(update(None, uid=3))
         assert "não baixo anexos" in client.messages[-1][0]
-        for i in range(3, 40):
+        for i in range(4, 41):
             bot.handle(update("/ajuda", uid=i))
         count = len(client.messages)
         bot.handle(update("/pendentes", uid=100))
         assert len(client.messages) == count and not client.documents
+
+
+def test_show_all_requires_an_explicit_click(config, telegram):
+    with MonitorState(config, telegram.state_dir).open() as state:
+        data = inventory()
+        data["activities"] = [inventory(ass=str(i))["activities"][0] for i in range(1, 8)]
+        state.observe(data, NOW)
+        client = Client(); bot = Bot(config, telegram, state, client, lambda: NOW)
+        bot.handle(update("/pendentes"))
+        assert len(client.messages) == 1
+        token = client.messages[0][1][1][0]["callback_data"]
+        bot.handle(update(uid=2, callback=token))
+        assert len(client.messages) == 9
+        assert client.messages[1][0].startswith("Pendentes — todas as 7 atividades")
+        assert all("Observado em:" in text for text, _ in client.messages[2:])
+        assert client.messages[-1][1][0][0]["text"] == "Abrir no ILIAS"
 
 
 def test_retention_settings_no_quota_paths_or_manual_purge(config, telegram):
@@ -474,6 +532,8 @@ def test_missing_unit_after_complete_scan_is_still_inconclusive(config, telegram
         assert all(component["event_kind"] == "health" for component in state.due(NOW + timedelta(hours=1)))
         client = Client(); bot = Bot(config, telegram, state, client, lambda: NOW + timedelta(hours=1))
         bot.handle(update("/verificar"))
+        token = client.messages[-1][1][-1][0]["callback_data"]
+        bot.handle(update(uid=2, callback=token))
         assert any("last_observation_not_current" in text for text, _ in client.messages)
 
 
@@ -540,7 +600,7 @@ def test_pending_notice_discloses_missing_historical_pending_observation(config,
     later = NOW + timedelta(hours=1)
     client = Client()
     run_monitor(config, telegram, collector=lambda c: inventory(now=later, ass="3"), client=client, clock=lambda: later)
-    pending = next(text for text, _ in client.messages if text.startswith("Pendente"))
+    pending = next(text for text, _ in client.messages if text.startswith("1 tarefa pendente"))
     assert "incompleta" in pending
 
 
@@ -554,11 +614,15 @@ def test_slow_dispatch_pauses_components_after_current_evidence_expires(config, 
             return result
     data = inventory()
     data["activities"].append(inventory(ass="3")["activities"][0])
+    data["activities"][0]["support_documents"] = [{
+        "document_id": "file:9", "title": "Blatt.pdf", "role": "support",
+        "selected_for_support": True, "cache": {"eligible": True}}]
     with MonitorState(config, telegram.state_dir).open() as state:
-        state.observe(data, NOW)
+        state.observe(data, NOW, documents=True)
         client = SlowClient()
         dispatch(state, config, telegram, client, NOW, lambda: now[0])
-        assert len(client.messages) == 1
+        assert len(client.messages) == 1 and not client.documents
+        assert state.db.execute("SELECT COUNT(*) FROM components WHERE state='sent'").fetchone()[0] == 2
         assert not state.due(now[0])
         assert state.db.execute("SELECT COUNT(*) FROM components WHERE state='paused'").fetchone()[0] == 1
 
@@ -585,3 +649,780 @@ def test_actionable_message_explains_pending_reason_and_contextual_support():
     text = activity_message(activity, stamp(NOW))
     assert "aceita arquivos e não há entrega confirmada" in text
     assert "Unterlagen.pdf (contextual; cópia disponível)" in text
+
+
+def test_summary_lists_counts_and_explains_empty_extraction(config, telegram):
+    with MonitorState(config, telegram.state_dir).open() as state:
+        state.observe(inventory("pending"), NOW)
+        client = Client(); bot = Bot(config, telegram, state, client, lambda: NOW)
+        bot.handle(update("/resumo"))
+        text = client.messages[-1][0]
+        assert text.startswith("Resumo da observação de")
+        assert "1 pendentes" in text
+
+        empty = dict(inventory("pending"), activities=[], classification={"complete": False, "counts": {}},
+                     coverage=[{"root_id": "1", "complete": False,
+                                "warnings": ["maximum_depth_reached"]}])
+        state.observe(empty, NOW + timedelta(minutes=1))
+        bot.handle(update("/resumo", uid=2))
+        text = client.messages[-1][0]
+        assert "nenhuma atividade registrada" in text
+        assert "A extração não registrou atividades" in text
+        assert "maximum_depth_reached" in text
+
+
+def test_futuras_lists_not_yet_open_activities(config, telegram):
+    with MonitorState(config, telegram.state_dir).open() as state:
+        state.observe(inventory("not_yet_open"), NOW)
+        client = Client(); bot = Bot(config, telegram, state, client, lambda: NOW)
+        bot.handle(update("/futuras"))
+        assert client.messages[0][0].startswith("Ainda não abertas — 1 atividade; observação de")
+        assert any("Übung <b>Original</b>" in text for text, _ in client.messages)
+
+
+def test_telegram_config_accepts_additional_allowed_users():
+    values = {"ILIAS_TELEGRAM_ENABLED": "true", "TELEGRAM_BOT_TOKEN": TOKEN,
+              "TELEGRAM_CHAT_ID": "100", "TELEGRAM_ALLOWED_USER_ID": "200",
+              "TELEGRAM_ALLOWED_USER_IDS": "300, 400, 300"}
+    config = TelegramConfig.from_mapping(values, worker=True)
+    assert config.permitted_user_ids == {"200", "300", "400"}
+
+    only_extra = TelegramConfig.from_mapping(
+        {**values, "TELEGRAM_ALLOWED_USER_ID": "", "TELEGRAM_ALLOWED_USER_IDS": "300"},
+        worker=True,
+    )
+    assert only_extra.permitted_user_ids == {"300"}
+
+    with pytest.raises(CacheError):
+        TelegramConfig.from_mapping({**values, "TELEGRAM_ALLOWED_USER_IDS": "300,abc"})
+    with pytest.raises(CacheError):
+        TelegramConfig.from_mapping({**values, "TELEGRAM_ALLOWED_USER_ID": "200x"})
+
+
+def test_secondary_user_needs_own_private_chat_and_has_isolated_draft(config, telegram):
+    telegram = replace(telegram, allowed_user_ids=("300",))
+    with MonitorState(config, telegram.state_dir).open() as state:
+        state.observe(inventory("pending"), NOW)
+        client = Client(); bot = Bot(config, telegram, state, client, lambda: NOW)
+        bot.handle(update("/pendentes", uid=1, user=300, chat=300))
+        assert client.messages[0][0].startswith("Pendentes")
+
+        sent = len(client.messages)
+        bot.handle(update("/pendentes", uid=2, user=300, chat=100))
+        bot.handle(update("/pendentes", uid=3, user=301, chat=301))
+        assert len(client.messages) == sent
+
+        bot.handle(update("/relatar", uid=4, user=300, chat=300))
+        bot.handle(update("descrição do secundário", uid=5, user=300, chat=300))
+        bot.handle(update("esperado do secundário", uid=6, user=300, chat=300))
+        bot.handle(update("/relatar", uid=7))
+        bot.handle(update("descrição do dono", uid=8))
+        bot.handle(update("esperado do dono", uid=9))
+        bot.handle(update("ocorrido do dono", uid=10))
+        bot.handle(update("-", uid=11))
+        bot.handle(update("/exportar", uid=12))
+        report = client.messages[-1][0]
+        assert "Nenhuma issue foi aberta" in report
+        assert "descrição do dono" in report and "esperado do dono" in report
+        assert "secundário" not in report
+
+
+def test_material_token_is_bound_to_the_requesting_user(config, telegram):
+    telegram = replace(telegram, allowed_user_ids=("300",))
+    data = inventory()
+    data["activities"][0]["support_documents"] = [{"document_id": "file:9", "title": "Blatt.pdf", "selected_for_support": True, "role": "support", "state": "metadata_only"}]
+    calls = []
+    with MonitorState(config, telegram.state_dir).open() as state:
+        state.observe(data, NOW)
+        client = Client(); bot = Bot(config, telegram, state, client, lambda: NOW, lambda c: calls.append(c) or deepcopy(data))
+        bot.handle(update("/materiais"))
+        token = client.messages[-1][1][0][0]["callback_data"]
+        bot.handle(update(uid=2, user=300, chat=300, callback=token))
+        assert not calls
+        assert "Ação expirada" in client.messages[-1][0]
+
+
+def test_activity_and_view_times_use_day_month_year_format(config, telegram):
+    with MonitorState(config, telegram.state_dir).open() as state:
+        state.observe(inventory("pending"), NOW)
+        client = Client(); bot = Bot(config, telegram, state, client, lambda: NOW)
+        bot.handle(update("/pendentes"))
+        assert "observação de 14/11/2026 00:00" in client.messages[0][0]
+        bot.handle(update(uid=2, callback=client.messages[0][1][-1][0]["callback_data"]))
+        text = "\n".join(t for t, _ in client.messages)
+        assert "Observado em: 14/11/2026 00:00" in text
+        assert "2026-11-14T00:00:00Z" not in text
+
+
+def test_course_timezone_is_applied_to_message_times(config, telegram):
+    from ilias_check.telegram import format_time
+    assert format_time("2026-11-15T01:24:54Z") == "15/11/2026 01:24"
+    assert format_time("2026-11-15T01:24:54Z", "Europe/Berlin") == "15/11/2026 02:24"
+    assert format_time("kein Termin") == "kein Termin"
+    assert format_time(None) == "não informado"
+
+
+def test_worker_registers_the_command_menu(telegram):
+    from ilias_check.bot import _COMMANDS
+
+    class Response:
+        status_code = 200
+        def json(self): return {"ok": True, "result": True}
+        def close(self): pass
+
+    class Session:
+        def __init__(self): self.calls = []
+        def post(self, url, **options):
+            self.calls.append((url, options)); return Response()
+
+    session = Session()
+    TelegramClient(telegram, session).set_commands(_COMMANDS)
+    url, options = session.calls[-1]
+    assert url.endswith("/setMyCommands")
+    assert [item["command"] for item in options["json"]["commands"]][:3] == ["start", "ajuda", "pendentes"]
+    assert all(item["description"] for item in options["json"]["commands"])
+
+
+def test_ajuda_is_help_only_and_start_lists_pending(config, telegram):
+    with MonitorState(config, telegram.state_dir).open() as state:
+        state.observe(inventory("pending"), NOW)
+        client = Client(); bot = Bot(config, telegram, state, client, lambda: NOW)
+        bot.handle(update("/ajuda"))
+        assert len(client.messages) == 1 and client.messages[0][0].startswith("/pendentes —")
+        bot.handle(update("/start", uid=2))
+        assert "/futuras" in client.messages[1][0]
+        assert client.messages[2][0].startswith("Pendentes — 1 atividade; observação de")
+
+
+def test_pending_detail_offers_single_use_material_button(config, telegram):
+    data = inventory()
+    data["activities"][0]["support_documents"] = [
+        {"document_id": "file:9", "title": "Blatt.pdf", "selected_for_support": True,
+         "role": "support", "state": "metadata_only"}
+    ]
+    with MonitorState(config, telegram.state_dir).open() as state:
+        state.observe(data, NOW)
+        client = Client()
+        bot = Bot(config, telegram, state, client, lambda: NOW)
+        bot.handle(update("/pendentes"))
+        assert client.messages[0][1][0][0]["text"] == "Exibir todas (1)"
+        bot.handle(update(uid=2, callback=client.messages[0][1][-1][0]["callback_data"]))
+        callbacks = [button["callback_data"] for row in client.messages[-1][1]
+                     for button in row if "callback_data" in button]
+        assert "envio dessa cópia pelo Telegram" in client.messages[-1][0]
+        assert callbacks and callbacks[0].startswith("m:")
+        token = callbacks[0][2:]
+        assert state.claim_material(token, NOW) == ("1:2", "file:9")
+        assert state.claim_material(token, NOW) is None
+
+
+def test_notification_material_button_triggers_explicit_download(config, telegram):
+    data = inventory()
+    data["activities"][0]["support_documents"] = [
+        {"document_id": "file:9", "title": "Blatt.pdf", "selected_for_support": True,
+         "role": "support", "state": "metadata_only"}
+    ]
+    sends = []
+    with MonitorState(config, telegram.state_dir).open() as state:
+        state.observe(data, NOW)
+        token = state.material_buttons(data["activities"][0], NOW)[0][0]["callback_data"]
+        client = Client()
+        bot = Bot(config, telegram, state, client, lambda: NOW,
+                  lambda c: deepcopy(data), lambda *args: sends.append(args))
+        bot.handle(update(callback=token))
+        assert len(sends) == 1
+        bot.handle(update(uid=2, callback=token))
+        assert len(sends) == 1 and "Ação expirada" in client.messages[-1][0]
+
+
+def test_existing_state_gains_material_request_table(config, telegram):
+    with MonitorState(config, telegram.state_dir).open() as state:
+        state.db.execute("DROP TABLE material_requests")
+        state.db.execute("PRAGMA user_version=1")
+        state.db.commit()
+    with MonitorState(config, telegram.state_dir).open() as state:
+        state.db.execute("SELECT token FROM material_requests").fetchall()
+
+
+def test_many_pending_events_send_one_summary_and_do_not_repeat(config, telegram):
+    data = inventory()
+    data['activities'] = [inventory(ass=str(i))['activities'][0] for i in range(65)]
+    for i, activity in enumerate(data['activities']):
+        activity['title'] = f'Original Aufgabe {i}'
+    client = Client()
+    report = run_monitor(config, telegram, collector=lambda c: data, client=client, clock=lambda: NOW)
+    assert len(client.messages) == 1 and not client.documents
+    text = client.messages[0][0]
+    assert text.startswith('65 tarefas pendentes')
+    assert all(activity['title'] in text for activity in data['activities'])
+    assert 'Bitte laden' not in text and 'kein Termin' not in text
+    assert report['sent_components'] == 65 and not report['planned_components']
+    with MonitorState(config, telegram.state_dir).open() as state:
+        assert state.db.execute("SELECT COUNT(DISTINCT message_id) FROM components").fetchone()[0] == 1
+        assert state.db.execute("SELECT COUNT(*) FROM observations WHERE notified_at IS NOT NULL").fetchone()[0] == 65
+    run_monitor(config, telegram, collector=lambda c: data, client=client, clock=lambda: NOW)
+    assert len(client.messages) == 1
+
+
+def test_partial_summary_groups_health_and_excludes_unknown_from_pending_count(config, telegram):
+    data = inventory(complete=False)
+    data['activities'] += [inventory('unknown', ass='3')['activities'][0]]
+    client = Client()
+    run_monitor(config, telegram, collector=lambda c: data, client=client, clock=lambda: NOW)
+    assert len(client.messages) == 1
+    assert client.messages[0][0].startswith('1 tarefa pendente')
+    assert 'Verificação incompleta' in client.messages[0][0]
+    assert '/verificar' in client.messages[0][0] and '/relatar' in client.messages[0][0]
+
+
+def test_summary_failure_retries_entire_batch_once_with_shared_ack(config, telegram):
+    data = inventory()
+    data['activities'] += [inventory(ass='3')['activities'][0]]
+    client = Client(TelegramError(uncertain=True))
+    run_monitor(config, telegram, collector=lambda c: data, client=client, clock=lambda: NOW)
+    with MonitorState(config, telegram.state_dir).open() as state:
+        rows = state.db.execute('SELECT * FROM components').fetchall()
+        assert all(row['state'] == 'uncertain' and row['attempts'] == 1 for row in rows)
+        assert all(row['notified_at'] is None for row in state.db.execute('SELECT * FROM observations'))
+    later = NOW + timedelta(minutes=1)
+    data['checked_at'] = stamp(later)
+    run_monitor(config, telegram, collector=lambda c: data, client=client, clock=lambda: later)
+    assert len(client.messages) == 1  # Retry delay has not elapsed.
+    later += timedelta(minutes=2)
+    data['checked_at'] = stamp(later)
+    client.fail = None
+    run_monitor(config, telegram, collector=lambda c: data, client=client, clock=lambda: later)
+    assert len(client.messages) == 2
+    with MonitorState(config, telegram.state_dir).open() as state:
+        assert not state.due(later)
+        assert state.db.execute("SELECT COUNT(*) FROM components WHERE state='sent'").fetchone()[0] == 2
+
+
+def test_long_summary_keeps_total_omission_count_and_navigation(config, telegram):
+    data = inventory()
+    data['activities'] = [inventory(ass=str(i))['activities'][0] for i in range(80)]
+    for activity in data['activities']:
+        activity['title'] = 'Originaltitel ' * 25
+    client = Client()
+    small = replace(telegram, max_message_chars=800)
+    run_monitor(config, small, collector=lambda c: data, client=client, clock=lambda: NOW)
+    assert len(client.messages) == 1
+    text = client.messages[0][0]
+    assert len(text) <= 800 and text.startswith('80 tarefas pendentes')
+    assert '… e mais ' in text and 'Exibir todas' in text
+    assert text.endswith('Detalhes, links e downloads: /pendentes')
+
+
+def test_activity_pagination_uses_buttons_and_command_always_opens_first_page(config, telegram):
+    data = inventory()
+    data['activities'] = [inventory(ass=str(i))['activities'][0] for i in range(12)]
+    with MonitorState(config, telegram.state_dir).open() as state:
+        state.observe(data, NOW)
+        client = Client(); bot = Bot(config, telegram, state, client, lambda: NOW)
+        bot.handle(update('/pendentes 3'))
+        assert len(client.messages) == 1 and 'página 1/3' in client.messages[-1][0]
+        next_button = client.messages[-1][1][0][0]['callback_data']
+        bot.handle(update(uid=2, callback=next_button))
+        assert len(client.messages) == 2 and 'página 2/3' in client.messages[-1][0]
+        back_button = client.messages[-1][1][0][0]['callback_data']
+        bot.handle(update(uid=3, callback=back_button))
+        assert len(client.messages) == 3 and 'página 1/3' in client.messages[-1][0]
+        assert '/pendentes 2' not in '\n'.join(text for text, _ in client.messages)
+        bot.handle(update(uid=4, callback=next_button))
+        assert 'Ação expirada' in client.messages[-1][0]
+
+
+def test_material_pagination_uses_buttons_without_command_arguments(config, telegram):
+    data = inventory()
+    data['activities'][0]['support_documents'] = [
+        {'document_id': f'file:{i}', 'title': f'Blatt {i}', 'selected_for_support': True, 'role': 'support'}
+        for i in range(11)]
+    with MonitorState(config, telegram.state_dir).open() as state:
+        state.observe(data, NOW)
+        client = Client(); bot = Bot(config, telegram, state, client, lambda: NOW)
+        bot.handle(update('/materiais'))
+        assert len(client.messages) == 1 and 'Página 1/2' in client.messages[-1][0]
+        token = client.messages[-1][1][-1][0]['callback_data']
+        bot.handle(update(uid=2, callback=token))
+        assert len(client.messages) == 2 and 'Página 2/2' in client.messages[-1][0]
+        assert client.messages[-1][1][-1][0]['text'] == '◀ Anterior'
+
+
+def test_detail_button_does_not_reuse_an_activity_which_left_the_view(config, telegram):
+    with MonitorState(config, telegram.state_dir).open() as state:
+        state.observe(inventory(), NOW)
+        client = Client(); bot = Bot(config, telegram, state, client, lambda: NOW)
+        bot.handle(update('/pendentes'))
+        token = client.messages[-1][1][-1][0]['callback_data']
+        state.observe(inventory('submitted'), NOW)
+        bot.handle(update(uid=2, callback=token))
+        assert 'A atividade mudou' in client.messages[-1][0]
+        assert not client.messages[-1][1]
+
+
+def test_additional_user_replies_use_their_private_chat_not_monitor_destination(config, telegram):
+    class Response:
+        status_code = 200
+        def json(self): return {'ok': True, 'result': {'message_id': 1}}
+        def close(self): pass
+    class Session:
+        def __init__(self): self.payloads = []
+        def post(self, url, **options):
+            self.payloads.append(options['json'])
+            return Response()
+    extra = replace(telegram, allowed_user_ids=('300',))
+    session = Session(); client = TelegramClient(extra, session)
+    with MonitorState(config, telegram.state_dir).open() as state:
+        state.observe(inventory(), NOW)
+        bot = Bot(config, extra, state, client, lambda: NOW)
+        bot.handle(update('/pendentes', user=300, chat=300))
+        assert session.payloads[-1]['chat_id'] == '300'
+        bot.handle(update('/ajuda', uid=2))
+        assert session.payloads[-1]['chat_id'] == '100'
+        assert client.config.chat_id == '100'
+        count = len(session.payloads)
+        bot.handle(update('/ajuda', uid=3, user=300, chat=100))
+        assert len(session.payloads) == count
+
+
+def test_history_and_document_caption_times_follow_course_zone(config, telegram):
+    activity = inventory('submitted')['activities'][0]
+    activity['submission_history'] = [{'submitted_at': stamp(NOW), 'scope': 'personal'}]
+    assert 'Entrega pessoal: 14/11/2026 01:00' in activity_message(
+        activity, stamp(NOW), timezone_name='Europe/Berlin')
+    class ClientWithCaption(TelegramClient):
+        def call(self, method, payload, files=None): return payload
+    entry = {'byte_size': 10, 'media_type': 'application/pdf', 'downloaded_at': stamp(NOW),
+             'last_validated_at': stamp(NOW), 'associations': {'1:2': {'expires_at': stamp(NOW + timedelta(days=1))}}}
+    payload = ClientWithCaption(telegram).document(None, entry, activity, stamp(NOW), 'Europe/Berlin')
+    assert 'Baixada: 14/11/2026 01:00' in payload['caption']
+    assert 'Validada: 14/11/2026 01:00' in payload['caption']
+    assert 'Expira: 15/11/2026 01:00' in payload['caption']
+
+
+@pytest.fixture
+def cached_material(config):
+    """A real private cache entry with synthetic bytes, not a mocked delivery gate."""
+    from ilias_check.materials import document_reference
+    from ilias_check.support_cache import cache_inventory
+    body = b'%PDF-1.7\nsynthetic cached worksheet\n%%EOF'
+    class Response:
+        status_code = 200
+        headers = {'Content-Type': 'application/pdf', 'Content-Length': str(len(body))}
+        def iter_content(self, chunk_size=65536): yield body
+        def close(self): pass
+    class Source:
+        def stream_document(self, material, headers): return Response()
+    data = inventory()
+    material = document_reference(
+        'https://ilias.example/ilias/goto.php?target=file_9_download&client_id=demo',
+        'worksheet.pdf', '1', '2', data['activities'][0]['url'], config.base_url, config.client_id,
+        'assignment_attachment', 'support', 'Files')
+    material['selected_for_support'] = True
+    data['activities'][0]['support_documents'] = [material]
+    enabled = replace(config, cache_policy=replace(config.cache_policy, enabled=True))
+    result = cache_inventory(data, enabled, Source(), lambda: NOW)
+    assert result['activities'][0]['support_documents'][0]['cache']['eligible']
+    return result, body
+
+
+@pytest.mark.parametrize('menu', ['/materiais', '/pendentes'])
+def test_button_serves_real_valid_cache_without_collection_or_refresh_throttle(config, telegram, cached_material, menu):
+    data, body = cached_material
+    class ReadingClient(Client):
+        def document(self, source, *args):
+            self.documents.append(source.read())
+    def unexpected(*args): pytest.fail('A cache hit must not collect, authenticate or download again')
+    with MonitorState(config, telegram.state_dir).open() as state:
+        state.observe(data, NOW)
+        state.set_cursor('support_check_at', int(NOW.timestamp()))
+        client = ReadingClient(); bot = Bot(config, telegram, state, client, lambda: NOW, unexpected, unexpected)
+        bot.handle(update(menu))
+        if menu == '/pendentes':
+            bot.handle(update(uid=2, callback=client.messages[-1][1][-1][0]['callback_data']))
+        token = next(button['callback_data'] for row in client.messages[-1][1] for button in row
+                     if button['text'].startswith('Baixar'))
+        bot.handle(update(uid=3, callback=token))
+        assert client.documents == [body]
+        assert 'cache local' in client.messages[-1][0]
+        # A second explicit request can also reuse the cache inside five minutes.
+        bot.handle(update('/materiais', uid=4))
+        token = client.messages[-1][1][0][0]['callback_data']
+        bot.handle(update(uid=5, callback=token))
+        assert client.documents == [body, body]
+        bot.handle(update(uid=6, callback=token))
+        assert client.documents == [body, body] and 'Ação expirada' in client.messages[-1][0]
+
+
+def test_cache_miss_announces_source_check_before_blocking_collection(config, telegram):
+    data = inventory()
+    data['activities'][0]['support_documents'] = [
+        {'document_id': 'file:9', 'title': 'Blatt.pdf', 'selected_for_support': True, 'role': 'support', 'state': 'metadata_only'}]
+    client = Client(); calls = []
+    def collector(c):
+        assert 'limite desta solicitação é de dois minutos' in client.messages[-1][0]
+        assert not c.cache_policy.enabled
+        calls.append(c)
+        return deepcopy(data)
+    with MonitorState(config, telegram.state_dir).open() as state:
+        state.observe(data, NOW)
+        bot = Bot(config, telegram, state, client, lambda: NOW, collector, lambda *args: calls.append('retrieve'))
+        bot.handle(update('/materiais'))
+        bot.handle(update(uid=2, callback=client.messages[-1][1][0][0]['callback_data']))
+        assert len(calls) == 2 and calls[-1] == 'retrieve'
+        assert not config.cache_policy.directory.exists()  # A miss does not create an empty store.
+
+
+@pytest.mark.parametrize('ineligible', ['stale', 'expired', 'unvalidated', 'corrupt', 'unselected', 'unknown', 'missing', 'submitted'])
+def test_invalid_cached_copy_is_not_served_before_source_refresh(config, telegram, cached_material, ineligible):
+    data, body = cached_material
+    now = NOW
+    if ineligible == 'stale': now += timedelta(hours=12, seconds=1)
+    if ineligible == 'expired': now += timedelta(hours=169)
+    if ineligible == 'unvalidated': now += timedelta(hours=13)
+    if ineligible in {'expired', 'unvalidated'}: data['checked_at'] = stamp(now)
+    if ineligible == 'stale':
+        manifest_path = config.cache_policy.directory / 'manifest.json'
+        manifest = json.loads(manifest_path.read_text())
+        for entry in manifest['entries'].values(): entry['last_validated_at'] = stamp(now)
+        manifest_path.write_text(json.dumps(manifest))
+    if ineligible == 'corrupt':
+        cache_path = Path(data['activities'][0]['support_documents'][0]['cache']['path'])
+        cache_path.write_bytes(b'corrupted cached bytes')
+    with MonitorState(config, telegram.state_dir).open() as state:
+        state.observe(data, now)
+        token = state.material_buttons(data['activities'][0], now)[0][0]['callback_data']
+        activity = data['activities'][0]
+        if ineligible == 'unselected':
+            activity['support_documents'][0]['selected_for_support'] = False
+            state.observe(data, now)
+        elif ineligible in {'unknown', 'submitted'}:
+            activity['status'] = ineligible
+            state.observe(data, now)
+        elif ineligible == 'missing':
+            missing = deepcopy(data); missing['activities'] = []
+            state.observe(missing, now)
+        calls = []
+        def collector(c):
+            calls.append(c)
+            return inventory('submitted', now=now)
+        client = Client(); bot = Bot(config, telegram, state, client, lambda: now, collector)
+        bot.handle(update(callback=token))
+        assert calls and not client.documents
+        assert 'Não foi possível confirmar' in client.messages[-1][0]
+
+
+def test_cached_upload_failure_does_not_trigger_collection_or_second_send(config, telegram, cached_material):
+    data, _ = cached_material
+    class FailingUpload(Client):
+        def document(self, *args):
+            self.documents.append(args)
+            raise TelegramError(uncertain=True)
+    def unexpected(*args): pytest.fail('Upload failure must not fetch or send a second copy')
+    with MonitorState(config, telegram.state_dir).open() as state:
+        state.observe(data, NOW)
+        client = FailingUpload(); bot = Bot(config, telegram, state, client, lambda: NOW, unexpected, unexpected)
+        bot.handle(update('/materiais'))
+        bot.handle(update(uid=2, callback=client.messages[-1][1][0][0]['callback_data']))
+        assert len(client.documents) == 1
+        assert 'confirmar o envio pelo Telegram' in client.messages[-1][0]
+        assert client.messages[-1][1][0][0]['text'] == 'Abrir no ILIAS'
+        assert not state.cursor('support_check_at')
+
+
+@pytest.mark.parametrize('menu', ['/materiais', '/pendentes'])
+@pytest.mark.parametrize('copy_state,icon', [('ready', '📦'), ('revalidate', '🔄'), ('remote', '🌐'), ('locked', '❔')])
+def test_interface_identifies_live_local_document_availability(config, telegram, cached_material, menu, copy_state, icon):
+    from contextlib import nullcontext
+    from ilias_check.support_cache import SupportCache
+    data, _ = cached_material
+    # Simulate a saved observation which predates a manual cache download.
+    material = data['activities'][0]['support_documents'][0]
+    material['state'] = 'metadata_only'; material.pop('cache')
+    now = NOW + (timedelta(hours=13) if copy_state == 'revalidate' else timedelta(hours=1))
+    if copy_state == 'remote':
+        for path in config.cache_policy.directory.glob('*.blob'): path.unlink()
+    def unexpected(*args): pytest.fail('Opening the interface must not access ILIAS')
+    with MonitorState(config, telegram.state_dir).open() as state:
+        state.observe(data, NOW)
+        client = Client(); bot = Bot(config, telegram, state, client, lambda: now, unexpected, unexpected)
+        lease = SupportCache(config, lambda: now).locked() if copy_state == 'locked' else nullcontext()
+        with lease:
+            bot.handle(update(menu))
+            if menu == '/pendentes':
+                bot.handle(update(uid=2, callback=client.messages[-1][1][-1][0]['callback_data']))
+        labels = [button['text'] for row in client.messages[-1][1] for button in row if button['text'].startswith('Baixar')]
+        assert len(labels) == 1 and labels[0].startswith(f'Baixar {icon}: worksheet.pdf')
+        assert not client.documents
+        if menu == '/pendentes' and copy_state == 'ready':
+            assert 'worksheet.pdf (disponível no cache)' in client.messages[-1][0]
+            assert 'somente referência' not in client.messages[-1][0]
+
+
+def test_cached_document_can_be_sent_hours_after_monitor_without_refresh(config, telegram, cached_material):
+    data, _ = cached_material
+    now = NOW + timedelta(hours=6)
+    def unexpected(*args): pytest.fail('A six-hour-old current observation can authorize valid cache')
+    with MonitorState(config, telegram.state_dir).open() as state:
+        state.observe(data, NOW)
+        client = Client(); bot = Bot(config, telegram, state, client, lambda: now, unexpected, unexpected)
+        bot.handle(update('/materiais'))
+        bot.handle(update(uid=2, callback=client.messages[-1][1][0][0]['callback_data']))
+        assert len(client.documents) == 1
+
+
+def test_interactive_timeout_stops_scan_and_restores_worker_timer(config, telegram, monkeypatch):
+    import signal
+    import threading
+    from ilias_check import bot as bot_module
+    from ilias_check.timeouts import material_request_deadline
+    data = inventory()
+    data['activities'][0]['support_documents'] = [
+        {'document_id': 'file:9', 'title': 'Blatt.pdf', 'selected_for_support': True, 'role': 'support', 'state': 'metadata_only'}]
+    old_handler = signal.getsignal(signal.SIGALRM)
+    monkeypatch.setattr(bot_module, 'material_request_deadline', lambda: material_request_deadline(0.02))
+    def slow_collector(c):
+        try:
+            threading.Event().wait(1)
+        except Exception:
+            pytest.fail('The deadline must escape ordinary per-page exception recovery')
+        pytest.fail('Timed-out collection must not keep running')
+    with MonitorState(config, telegram.state_dir).open() as state:
+        state.observe(data, NOW)
+        before = state.snapshot()
+        client = Client(); bot = Bot(config, telegram, state, client, lambda: NOW, slow_collector)
+        bot.handle(update('/materiais'))
+        bot.handle(update(uid=2, callback=client.messages[-1][1][0][0]['callback_data']))
+        assert 'limite de dois minutos' in client.messages[-1][0]
+        assert client.messages[-1][1][0][0]['text'] == 'Abrir no ILIAS'
+        assert not client.documents and state.snapshot() == before
+        assert signal.getitimer(signal.ITIMER_REAL)[0] == 0
+        assert signal.getsignal(signal.SIGALRM) == old_handler
+        with state.run_lock(): pass  # Timeout released the run lease.
+        bot.handle(update('/ajuda', uid=3))
+        assert client.messages[-1][0].startswith('/pendentes —')
+
+
+@pytest.mark.parametrize('entry_name,title,expected', [
+    ('Arbeitsblatt Übung.docx', 'Different.docx', 'Arbeitsblatt Übung.docx'),
+    (None, 'Original Übung.docx', 'Original Übung.docx'),
+    ('../../worksheet\r\n.docx', None, 'worksheet.docx'),
+    ('C:\\private\\worksheet.docx', None, 'worksheet.docx'),
+    (None, None, 'material.docx'),
+])
+def test_document_upload_uses_safe_original_filename(telegram, entry_name, title, expected):
+    class RecordingClient(TelegramClient):
+        def call(self, method, payload, files=None): return files
+    activity = inventory()['activities'][0]
+    if title:
+        activity['support_documents'] = [{'document_id': 'file:9', 'title': title}]
+    entry = {'document_id': 'file:9', 'filename': entry_name, 'byte_size': 10,
+             'media_type': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+             'downloaded_at': stamp(NOW), 'last_validated_at': stamp(NOW), 'associations': {}}
+    files = RecordingClient(telegram).document(None, entry, activity, stamp(NOW))
+    assert files['document'][0] == expected
+
+
+def test_current_cached_copy_can_be_sent_while_monitor_holds_scan_lock(config, telegram, cached_material):
+    data, _ = cached_material
+    def unexpected(*args): pytest.fail('Available cache must not require another source scan')
+    with MonitorState(config, telegram.state_dir).open() as state:
+        state.observe(data, NOW)
+        client = Client(); bot = Bot(config, telegram, state, client, lambda: NOW, unexpected, unexpected)
+        bot.handle(update('/materiais'))
+        token = client.messages[-1][1][0][0]['callback_data']
+        with state.run_lock():
+            bot.handle(update(uid=2, callback=token))
+        assert len(client.documents) == 1
+
+
+def test_cache_miss_during_monitor_scan_explains_busy_without_collecting(config, telegram, caplog):
+    data = inventory()
+    data['activities'][0]['support_documents'] = [
+        {'document_id': 'file:9', 'title': 'worksheet.pdf', 'selected_for_support': True, 'role': 'support', 'state': 'metadata_only'}]
+    def unexpected(*args): pytest.fail('Do not start a second scan while the monitor holds the lease')
+    with MonitorState(config, telegram.state_dir).open() as state:
+        state.observe(data, NOW)
+        client = Client(); bot = Bot(config, telegram, state, client, lambda: NOW, unexpected, unexpected)
+        bot.handle(update('/materiais'))
+        token = client.messages[-1][1][0][0]['callback_data']
+        with state.run_lock(): bot.handle(update(uid=2, callback=token))
+        assert 'monitor está em andamento' in client.messages[-1][0]
+        assert client.messages[-1][1][0][0]['text'] == 'Abrir no ILIAS'
+        assert 'stage=source_lock category=runtime_busy' in caplog.text
+        assert not state.cursor('support_check_at') and not client.documents
+
+
+def test_cached_copy_rechecks_newer_submission_before_upload(config, telegram, cached_material, monkeypatch):
+    from contextlib import contextmanager
+    from ilias_check.support_cache import SupportCache
+    data, _ = cached_material
+    original = SupportCache.delivery
+    with MonitorState(config, telegram.state_dir).open() as state:
+        state.observe(data, NOW)
+        @contextmanager
+        def changed_during_open(cache, *args, **kwargs):
+            with original(cache, *args, **kwargs) as item:
+                state.observe(inventory('submitted'), NOW)
+                yield item
+        monkeypatch.setattr(SupportCache, 'delivery', changed_during_open)
+        client = Client(); bot = Bot(config, telegram, state, client, lambda: NOW, lambda c: inventory('submitted'))
+        bot.handle(update('/materiais'))
+        bot.handle(update(uid=2, callback=client.messages[-1][1][0][0]['callback_data']))
+        assert not client.documents and 'Não foi possível confirmar' in client.messages[-1][0]
+
+
+def test_material_deadline_setup_failure_is_visible_and_logged_without_secrets(config, telegram, cached_material, monkeypatch, caplog):
+    from contextlib import contextmanager
+    from ilias_check import bot as bot_module
+    data, _ = cached_material
+    @contextmanager
+    def failed_deadline():
+        raise CacheError(TOKEN + config.password)
+        yield
+    monkeypatch.setattr(bot_module, 'material_request_deadline', failed_deadline)
+    with MonitorState(config, telegram.state_dir).open() as state:
+        state.observe(data, NOW)
+        client = Client(); bot = Bot(config, telegram, state, client, lambda: NOW)
+        bot.handle(update('/materiais'))
+        bot.handle(update(uid=2, callback=client.messages[-1][1][0][0]['callback_data']))
+        assert 'iniciar o limite de tempo' in client.messages[-1][0]
+        assert client.messages[-1][1][0][0]['text'] == 'Abrir no ILIAS'
+        assert 'stage=deadline category=CacheError' in caplog.text
+        assert TOKEN not in caplog.text and config.password not in caplog.text
+        assert not client.documents
+
+
+def test_busy_cache_does_not_start_unnecessary_source_refresh(config, telegram, cached_material, caplog):
+    from ilias_check.support_cache import SupportCache
+    data, _ = cached_material
+    def unexpected(*args): pytest.fail('A busy cache is not a cache miss and must not start a source scan')
+    with MonitorState(config, telegram.state_dir).open() as state:
+        state.observe(data, NOW)
+        client = Client(); bot = Bot(config, telegram, state, client, lambda: NOW, unexpected, unexpected)
+        bot.handle(update('/materiais'))
+        token = client.messages[-1][1][0][0]['callback_data']
+        with SupportCache(config, lambda: NOW).locked():
+            bot.handle(update(uid=2, callback=token))
+        assert 'cache está sendo utilizado' in client.messages[-1][0]
+        assert 'stage=cache category=runtime_busy' in caplog.text
+        assert not client.documents and not state.cursor('support_check_at')
+
+
+def test_worker_network_failures_retry_quickly_and_resume_commands(config, telegram, caplog):
+    class Recovering(Client):
+        def __init__(self): super().__init__(); self.polls = 0
+        def updates(self, offset):
+            self.polls += 1
+            if self.polls <= 3: raise TelegramError(TOKEN + config.password, uncertain=True)
+            return [update('/ajuda')]
+    client = Recovering(); sleeps = []
+    run_bot(config, telegram, client, lambda: NOW, max_polls=4, sleeper=sleeps.append)
+    assert sleeps == [2, 4, 8] and sum(sleeps) == 14
+    assert len(client.messages) == 1 and client.messages[0][0].startswith('/pendentes —')
+    assert 'stage=poll failures=3 category=connection_or_delivery_error' in caplog.text
+    assert TOKEN not in caplog.text and config.password not in caplog.text
+
+
+def test_worker_still_honors_actual_telegram_rate_limit(config, telegram, caplog):
+    class Limited(Client):
+        def __init__(self): super().__init__(); self.polls = 0
+        def updates(self, offset):
+            self.polls += 1
+            if self.polls == 1:
+                raise TelegramError('telegram_rate_limited', retry_after=45, http_status=429)
+            return []
+    sleeps = []
+    run_bot(config, telegram, Limited(), lambda: NOW, max_polls=2, sleeper=sleeps.append)
+    assert sleeps == [45]
+    assert 'category=rate_limited http_status=429 delay_seconds=45' in caplog.text
+
+
+def test_worker_defers_long_requested_rate_limit_without_early_retry(config, telegram):
+    class Limited(Client):
+        def updates(self, offset):
+            raise TelegramError('telegram_rate_limited', retry_after=120, http_status=429)
+    sleeps = []
+    with pytest.raises(TelegramError) as error:
+        run_bot(config, telegram, Limited(), lambda: NOW, sleeper=sleeps.append)
+    assert str(error.value) == 'telegram_worker_deferred'
+    assert error.value.retry_after == 120 and error.value.http_status == 429 and not sleeps
+
+
+def test_polling_conflict_has_safe_status_and_actionable_worker_log(config, telegram, caplog):
+    class Response:
+        status_code = 409
+        def json(self): return {'ok': False, 'description': TOKEN + config.password}
+        def close(self): pass
+    class Session:
+        def post(self, *args, **kwargs): return Response()
+    with pytest.raises(TelegramError) as error:
+        TelegramClient(telegram, Session()).updates(0)
+    assert str(error.value) == 'telegram_polling_conflict' and error.value.http_status == 409
+    conflict = error.value
+    class Conflict(Client):
+        def updates(self, offset): raise conflict
+    run_bot(config, telegram, Conflict(), lambda: NOW, max_polls=1, sleeper=lambda seconds: None)
+    assert 'category=polling_conflict http_status=409' in caplog.text
+    assert 'including on other machines' in caplog.text
+    assert TOKEN not in caplog.text and config.password not in caplog.text
+
+
+def test_cli_reports_worker_api_failure_without_inventory_error(config, telegram, monkeypatch, capsys):
+    from ilias_check import cli
+    monkeypatch.setattr(cli.CollectorConfig, 'from_environment', lambda **kwargs: config)
+    monkeypatch.setattr(cli, 'load_environment', lambda *args: {})
+    monkeypatch.setattr(cli.TelegramConfig, 'from_mapping', lambda *args, **kwargs: telegram)
+    def failed(*args): raise TelegramError(TOKEN)
+    monkeypatch.setattr(cli, 'run_bot', failed)
+    assert cli.main(['bot']) == 1
+    output = capsys.readouterr()
+    assert 'Telegram worker stopped after an API failure' in output.err
+    assert 'inventory' not in output.err.lower() and TOKEN not in output.err
+
+
+def test_additional_authorized_user_can_use_own_chat_when_it_is_notification_destination(config, telegram):
+    telegram = replace(telegram, chat_id='300', allowed_user_ids=('300',))
+    with MonitorState(config, telegram.state_dir).open() as state:
+        state.observe(inventory(), NOW)
+        client = Client(); bot = Bot(config, telegram, state, client, lambda: NOW)
+        bot.handle(update('/start', user=300, chat=300))
+        assert len(client.messages) == 2
+        assert client.messages[1][0].startswith('Pendentes —')
+
+
+def test_primary_and_additional_users_route_replies_when_destination_is_additional_user(config, telegram):
+    class Response:
+        status_code = 200
+        def json(self): return {'ok': True, 'result': {'message_id': 1}}
+        def close(self): pass
+    class Session:
+        def __init__(self): self.payloads = []
+        def post(self, url, **options): self.payloads.append(options['json']); return Response()
+    configuration = replace(telegram, chat_id='300', allowed_user_ids=('300',))
+    session = Session(); client = TelegramClient(configuration, session)
+    with MonitorState(config, configuration.state_dir).open() as state:
+        state.observe(inventory(), NOW)
+        bot = Bot(config, configuration, state, client, lambda: NOW)
+        bot.handle(update('/start', user=300, chat=300))
+        assert len(session.payloads) == 2 and all(p['chat_id'] == '300' for p in session.payloads)
+        bot.handle(update('/ajuda', uid=2, user=200, chat=200))
+        assert session.payloads[-1]['chat_id'] == '200'
+        assert client.config.chat_id == '300'
+
+
+def test_allowlist_only_user_can_use_own_chat_as_notification_destination(config, telegram):
+    telegram = replace(telegram, chat_id='300', allowed_user_id='', allowed_user_ids=('300',))
+    with MonitorState(config, telegram.state_dir).open() as state:
+        client = Client(); bot = Bot(config, telegram, state, client, lambda: NOW)
+        bot.handle(update('/ajuda', user=300, chat=300))
+        assert len(client.messages) == 1
+
+
+def test_authorization_denial_reports_reason_without_private_fields(config, telegram, caplog):
+    with MonitorState(config, telegram.state_dir).open() as state:
+        client = Client(); bot = Bot(config, telegram, state, client, lambda: NOW)
+        bot.handle(update('/start ' + TOKEN + config.password, user=301, chat=301))
+        assert 'telegram_update_ignored reason=user_not_allowed' in caplog.text
+        assert TOKEN not in caplog.text and config.password not in caplog.text
+        assert not client.messages

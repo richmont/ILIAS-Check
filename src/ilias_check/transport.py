@@ -55,6 +55,7 @@ class SafeTransport:
     session: Any | None = None
     sleeper: Callable[[float], None] = time.sleep
     request_count: int = 0
+    on_request: Callable[[], None] | None = None
     _base_origin: tuple[str, str, int] = field(init=False, repr=False)
     _base_path: str = field(init=False, repr=False)
 
@@ -194,6 +195,8 @@ class SafeTransport:
         if self.request_count >= self.config.max_requests:
             raise TransportError("The configured ILIAS request budget was exhausted.")
         self.request_count += 1
+        if self.on_request is not None:
+            self.on_request()
         try:
             return self.session.request(
                 method,

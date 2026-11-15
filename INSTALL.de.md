@@ -163,6 +163,7 @@ ILIAS_TELEGRAM_ENABLED=false
 TELEGRAM_BOT_TOKEN=
 TELEGRAM_CHAT_ID=
 TELEGRAM_ALLOWED_USER_ID=
+TELEGRAM_ALLOWED_USER_IDS=
 ILIAS_TELEGRAM_SEND_DOCUMENTS=false
 ILIAS_TELEGRAM_MAX_DOCUMENT_BYTES=20971520
 ILIAS_TELEGRAM_MAX_MESSAGE_CHARS=4000
@@ -210,6 +211,7 @@ ILIAS_TELEGRAM_ENABLED=false
 TELEGRAM_BOT_TOKEN='REPLACE_WITH_REAL_BOTFATHER_TOKEN'
 TELEGRAM_CHAT_ID=
 TELEGRAM_ALLOWED_USER_ID=
+TELEGRAM_ALLOWED_USER_IDS=
 ILIAS_TELEGRAM_SEND_DOCUMENTS=false
 ```
 
@@ -299,8 +301,13 @@ cd /opt/ilias/check
 umask 077
 /opt/ilias/venv/bin/ilias-check collect \
   --env-file /opt/ilias/data/ilias.env \
+  --progress \
   > "/opt/ilias/data/inventory.json"
 ```
+
+`--progress` (auch von `monitor` akzeptiert) zeigt gedrosselte Zähler für Anfragen und
+Objekte, den aktuellen Root und die verstrichene Zeit auf stderr. Das JSON auf stdout
+bleibt sauber; die Fortschrittszeilen enthalten nie Titel, URLs oder Zugangsdaten.
 
 Prüfen Sie dann unklare Fälle lokal:
 
@@ -339,6 +346,7 @@ ILIAS_TELEGRAM_ENABLED=true
 TELEGRAM_BOT_TOKEN='REPLACE_WITH_REAL_BOTFATHER_TOKEN'
 TELEGRAM_CHAT_ID=REPLACE_NUMERIC_CHAT_ID
 TELEGRAM_ALLOWED_USER_ID=REPLACE_NUMERIC_USER_ID
+TELEGRAM_ALLOWED_USER_IDS=
 ILIAS_TELEGRAM_SEND_DOCUMENTS=false
 ```
 
@@ -346,6 +354,13 @@ Die [Aktivierungsvorlage](examples/config/ilias-telegram.env.example) zeigt die
 vollständige Datei. Die IDs müssen positive Ganzzahlen ohne `@`, Benutzername oder
 Gruppenpräfix sein. Mit `ILIAS_TELEGRAM_SEND_DOCUMENTS=false` beginnen Sie nur mit
 Text und Links.
+
+Weitere Telegram-Konten können dieselben Beobachtungen abfragen: tragen Sie ihre
+numerischen IDs komma-getrennt in `TELEGRAM_ALLOWED_USER_IDS` ein. Jedes Konto muss
+den Bot aus einem eigenen privaten Chat anschreiben; Befehle im Hauptchat werden
+weiterhin nur von `TELEGRAM_ALLOWED_USER_ID` akzeptiert. Benachrichtigungen gehen
+weiterhin ausschließlich an `TELEGRAM_CHAT_ID`, und alle sehen dieselben ILIAS-Daten,
+Historie und Aufbewahrungseinstellungen.
 
 Prüfen Sie die Konfiguration **ohne Netzwerk und ohne den Worker zu starten**:
 
@@ -366,7 +381,8 @@ try:
     CollectorConfig.from_mapping(values)
     enabled = boolean(values, 'ILIAS_TELEGRAM_ENABLED')
     if enabled:
-        telegram = ('TELEGRAM_BOT_TOKEN', 'TELEGRAM_CHAT_ID', 'TELEGRAM_ALLOWED_USER_ID')
+        telegram = ('TELEGRAM_BOT_TOKEN', 'TELEGRAM_CHAT_ID', 'TELEGRAM_ALLOWED_USER_ID',
+                    'TELEGRAM_ALLOWED_USER_IDS')
         if any('REPLACE' in str(values.get(key, '')) for key in telegram):
             raise ConfigurationError('Die Telegram-Einstellungen enthalten noch REPLACE-Felder.')
         TelegramConfig.from_mapping(values, worker=True)
@@ -416,7 +432,9 @@ Erste Befehle:
 | `/pendentes` | Bestätigte ausstehende Uploads. |
 | `/entregues` | Abgabehistorie; keine Freigabe impliziert. |
 | `/encerradas` | Ohne Abgabe geschlossen. |
+| `/futuras` | Zeitraum noch nicht geöffnet. |
 | `/verificar` | Unklare Fälle, Quelle und Feedback-Einladung. |
+| `/resumo` | Zählung je Situation und Abdeckungswarnungen. |
 | `/configuracoes` | Aufbewahrung und Cache-Nutzung/Quote. |
 | `/materiais` | Auswählbare Materialien; Antippen autorisiert das Senden dieser Kopie über Telegram. |
 | `/relatar` | Prüfbarer Bericht über die Software; es wird kein Issue automatisch geöffnet. |
@@ -461,6 +479,15 @@ Siehe [Telegram-Befehle](https://core.telegram.org/bots/features#commands).
 
 Wenn Sie den Vordergrundtest beenden, drücken Sie **Strg+C**, um den Worker zu stoppen,
 bevor Sie den Dienst im nächsten Schritt starten.
+
+Dokument-Schaltflächen versuchen zuerst, eine gültige lokale Cache-Kopie zu
+verwenden. Sind Aktivitätsdaten oder Dateiprüfung zu alt, fehlt die Kopie oder ist
+sie ungültig, kündigt der Bot eine erforderliche
+ILIAS-Prüfung an. Eine Materialanfrage ist auf insgesamt zwei Minuten begrenzt.
+Für angeforderte Cache-Kopien darf die aktuelle Beobachtung einer offenen Aufgabe
+höchstens zwölf Stunden alt sein; Dateiprüfung und Ablauf bleiben verbindlich.
+Die Schaltflächen zeigen die Verfügbarkeit und einen Prüfbedarf an. Gesendete
+Dateien behalten ihren ursprünglichen Namen.
 
 ## 10. Worker mit systemd auf Benutzerebene betreiben
 

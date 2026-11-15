@@ -41,3 +41,10 @@ The collector SHALL omit passwords, cookies, authentication tokens, and token-be
 #### Scenario: Authentication error
 - **WHEN** authentication fails after credentials were loaded
 - **THEN** the error identifies the failure category without echoing credentials or session material
+
+### Requirement: Reproducible multilingual installation instructions
+Installation guides SHALL default to English with Brazilian Portuguese and German variants. Examples SHALL clone `main` into `/opt/ilias/check`, execute from `/opt/ilias/venv`, and keep private configuration and runtime data under `/opt/ilias/data`. systemd and cron examples SHALL share this layout and runtime user. Credentials SHALL be configured before enablement or sharing. Bonn timezone examples SHALL use `Europe/Berlin`.
+
+#### Scenario: New installation from merged implementation
+- **WHEN** a user follows any installation-guide language variant
+- **THEN** the source is cloned from `main`, runtime data stays outside the source checkout, and all execution examples point to the matching virtual environment and private configuration

@@ -2,14 +2,16 @@
 from __future__ import annotations
 
 from dataclasses import replace
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import json
 import sqlite3
 
 from ilias_check.collector import collect_inventory
 from ilias_check.monitor_state import MonitorState
-from ilias_check.support_cache import SupportCache, cache_inventory
-from ilias_check.telegram import TelegramClient, TelegramError, activity_message, source_buttons
+from ilias_check.support_cache import SupportCache, cache_inventory, instant
+from ilias_check.telegram import (
+    TelegramClient, TelegramError, format_time, source_buttons,
+)
 
 
 def effective_config(config, state):
@@ -27,44 +29,80 @@ def maintain(config, clock):
         return {"error": "support_cache_maintenance_deferred", "quota_bytes": config.cache_policy.max_bytes}
 
 
+def pending_digest(state, config, now, incomplete=False, max_chars=4000):
+    """Fit a count and simple title list into one notification, keeping the footer."""
+    snapshot = state.snapshot() or {}
+    activities = [json.loads(row["activity"]) for row in state.db.execute(
+        "SELECT activity,checked_at FROM observations WHERE current=1 AND confirmed='pending' ORDER BY id")
+        if now - timedelta(minutes=15) <= instant(row["checked_at"]) <= now + timedelta(seconds=60)]
+    count = len(activities)
+    plural = "s" if count != 1 else ""
+    lines = [f"{count} tarefa{plural} pendente{plural} — observação de "
+             f"{format_time(snapshot.get('checked_at'), config.classification_policy.timezone)}", ""]
+    footer = "\n\nDetalhes, links e downloads: /pendentes"
+    if incomplete:
+        footer += ("\nVerificação incompleta. Inconclusivo — precisa verificar. "
+                   "Consulte /verificar e /relatar; o feedback não altera a situação no ILIAS.")
+    if not activities:
+        lines.append("Nenhuma pendência confirmada; isso não confirma que todas estejam concluídas.")
+    for index, activity in enumerate(activities, 1):
+        # Newlines in source titles must not turn into extra list items.
+        line = f"{index}. " + " ".join(activity["title"].split())[:120]
+        remaining = count - index
+        overflow = f"\n… e mais {remaining}. Use /pendentes e “Exibir todas”." if remaining else ""
+        candidate = "\n".join(lines + [line]) + overflow + footer
+        if len(candidate) > max_chars:
+            lines.append(f"… e mais {count - index + 1}. Use /pendentes e “Exibir todas”.")
+            break
+        lines.append(line)
+    return ("\n".join(lines) + footer)[:max_chars]
+
+
 def dispatch(state, config, telegram, client, now, clock):
-    sent = 0
     snapshot = state.snapshot() or {}
     incomplete = not snapshot.get("observation_complete", False) or any(not c["complete"] for c in snapshot.get("coverage", [])) or not snapshot.get("classification", {}).get("complete", False)
-    for component in state.due(now):
+    # Reconcile immediately before the single text send. Include all due message
+    # components so a large inventory does not spill into repeated summary alerts.
+    batch = state.due(clock(), kind="message", limit=None)
+    sent = 0
+    if batch:
+        text = pending_digest(state, config, clock(), incomplete, telegram.max_message_chars)
+        unknown = [a for a in snapshot.get("activities", []) if a["status"] == "unknown"]
+        missing = [json.loads(row["activity"]) for row in state.db.execute(
+            "SELECT activity FROM observations WHERE current=0 AND confirmed='pending' ORDER BY id LIMIT 6")]
+        candidates = list({(a["exercise_id"], a["assignment_id"]): a for a in unknown + missing}.values())[:6]
+        buttons = [row for activity in candidates for row in source_buttons(activity)]
+        try:
+            result = client.message(text, buttons)
+        except Exception as exc:
+            for component in batch:
+                state.failed(component, exc, clock())
+        else:
+            for component in batch:
+                state.acknowledged(component, result.get("message_id", "confirmed"), clock())
+            sent += len(batch)
+    # Attachments remain independent, explicitly enabled components. Slow sends
+    # cannot authorize later bytes with evidence which has expired in the meantime.
+    for component in state.due(clock(), kind="document", limit=49):
         if not state.dispatchable(component, clock()):
             continue
         observation = state.db.execute("SELECT * FROM observations WHERE id=?", (component["activity_id"],)).fetchone()
-        activity = json.loads(observation["activity"]) if observation else None
+        activity = json.loads(observation["activity"])
+        material = next((d for d in activity.get("support_documents", []) if d.get("document_id") == component["document_id"] and d.get("selected_for_support") and d.get("role") == "support"), None)
+        if not telegram.send_documents or material is None:
+            with state.db:
+                state.db.execute("UPDATE components SET state='cancelled' WHERE event_id=? AND kind=? AND document_id=?", (component["event_id"], component["kind"], component["document_id"]))
+            continue
         try:
-            if component["kind"] == "message":
-                if activity:
-                    result = client.message(activity_message(activity, observation["checked_at"], incomplete), source_buttons(activity))
-                else:
-                    unknown = [a for a in snapshot.get("activities", []) if a["status"] == "unknown"]
-                    missing = [json.loads(row["activity"]) for row in state.db.execute(
-                        "SELECT activity FROM observations WHERE current=0 AND confirmed='pending' ORDER BY id LIMIT 6")]
-                    candidates = list({(a["exercise_id"], a["assignment_id"]): a for a in unknown + missing}.values())[:6]
-                    details = "\n".join(a["title"][:180] for a in candidates)
-                    buttons = [row for a in candidates for row in source_buttons(a)]
-                    result = client.message("Verificação incompleta. Inconclusivo — precisa verificar.\n"
-                                            f"Observado em: {snapshot.get('checked_at', 'não confirmado')}\n{details}\n"
-                                            "Use /verificar e /relatar para descrever como espera que o bot exiba essas atividades. O feedback não altera a situação no ILIAS.", buttons)
-            else:
-                material = next((d for d in activity.get("support_documents", []) if d.get("document_id") == component["document_id"] and d.get("selected_for_support") and d.get("role") == "support"), None)
-                if not telegram.send_documents or material is None:
-                    with state.db:
-                        state.db.execute("UPDATE components SET state='cancelled' WHERE event_id=? AND kind=? AND document_id=?", (component["event_id"], component["kind"], component["document_id"]))
-                    continue
-                try:
-                    with SupportCache(config, clock).delivery(component["document_id"], activity, observation["checked_at"]) as (source, entry):
-                        result = client.document(source, entry, activity, observation["checked_at"])
-                except TelegramError as exc:
-                    if str(exc) != "telegram_document_too_large":
-                        raise
-                    result = client.message(f"Material excede o limite de envio: {material['title'][:300]}. Abra a fonte no ILIAS.", source_buttons(activity))
-                except Exception:
-                    result = client.message(f"Material indisponível ou expirado: {material['title'][:300]}. Abra a fonte no ILIAS.", source_buttons(activity))
+            try:
+                with SupportCache(config, clock).delivery(component["document_id"], activity, observation["checked_at"]) as (source, entry):
+                    result = client.document(source, entry, activity, observation["checked_at"], config.classification_policy.timezone)
+            except TelegramError as exc:
+                if str(exc) != "telegram_document_too_large":
+                    raise
+                result = client.message(f"Material excede o limite de envio: {material['title'][:300]}. Abra a fonte no ILIAS.", source_buttons(activity))
+            except Exception:
+                result = client.message(f"Material indisponível ou expirado: {material['title'][:300]}. Abra a fonte no ILIAS.", source_buttons(activity))
             state.acknowledged(component, result.get("message_id", "confirmed"), clock())
             sent += 1
         except Exception as exc:

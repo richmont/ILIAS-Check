@@ -158,6 +158,7 @@ ILIAS_TELEGRAM_ENABLED=false
 TELEGRAM_BOT_TOKEN=
 TELEGRAM_CHAT_ID=
 TELEGRAM_ALLOWED_USER_ID=
+TELEGRAM_ALLOWED_USER_IDS=
 ILIAS_TELEGRAM_SEND_DOCUMENTS=false
 ILIAS_TELEGRAM_MAX_DOCUMENT_BYTES=20971520
 ILIAS_TELEGRAM_MAX_MESSAGE_CHARS=4000
@@ -203,6 +204,7 @@ ILIAS_TELEGRAM_ENABLED=false
 TELEGRAM_BOT_TOKEN='REPLACE_TOKEN_REAL_DO_BOTFATHER'
 TELEGRAM_CHAT_ID=
 TELEGRAM_ALLOWED_USER_ID=
+TELEGRAM_ALLOWED_USER_IDS=
 ILIAS_TELEGRAM_SEND_DOCUMENTS=false
 ```
 
@@ -290,8 +292,13 @@ cd /opt/ilias/check
 umask 077
 /opt/ilias/venv/bin/ilias-check collect \
   --env-file /opt/ilias/data/ilias.env \
+  --progress \
   > "/opt/ilias/data/inventory.json"
 ```
+
+`--progress` (também aceito por `monitor`) mostra contagens limitadas de requisições
+e objetos, o root atual e o tempo decorrido no stderr. O JSON no stdout permanece
+limpo, e as linhas de progresso nunca incluem títulos, URLs ou credenciais.
 
 Depois, consulte os casos inconclusivos localmente:
 
@@ -328,12 +335,20 @@ ILIAS_TELEGRAM_ENABLED=true
 TELEGRAM_BOT_TOKEN='REPLACE_TOKEN_REAL_DO_BOTFATHER'
 TELEGRAM_CHAT_ID=REPLACE_CHAT_ID_NUMERICO
 TELEGRAM_ALLOWED_USER_ID=REPLACE_USER_ID_NUMERICO
+TELEGRAM_ALLOWED_USER_IDS=
 ILIAS_TELEGRAM_SEND_DOCUMENTS=false
 ```
 
 O [modelo de ativação](examples/config/ilias-telegram.env.example) mostra o arquivo
 completo. Os IDs devem ser inteiros positivos sem `@`, username ou prefixo de grupo.
 Manter `ILIAS_TELEGRAM_SEND_DOCUMENTS=false` permite começar somente com texto e links.
+
+Para permitir que outras contas do Telegram consultem as mesmas observações, liste os
+IDs numéricos em `TELEGRAM_ALLOWED_USER_IDS`, separados por vírgula. Cada uma precisa
+abrir um chat privado com o bot a partir da própria conta; comandos no chat principal
+continuam aceitos apenas de `TELEGRAM_ALLOWED_USER_ID`. As notificações seguem indo
+somente para `TELEGRAM_CHAT_ID`, e todos veem os mesmos dados do ILIAS, histórico e
+configuração de retenção.
 
 Valide a configuração, **sem rede e sem iniciar o worker**:
 
@@ -354,7 +369,8 @@ try:
     CollectorConfig.from_mapping(values)
     enabled = boolean(values, 'ILIAS_TELEGRAM_ENABLED')
     if enabled:
-        telegram = ('TELEGRAM_BOT_TOKEN', 'TELEGRAM_CHAT_ID', 'TELEGRAM_ALLOWED_USER_ID')
+        telegram = ('TELEGRAM_BOT_TOKEN', 'TELEGRAM_CHAT_ID', 'TELEGRAM_ALLOWED_USER_ID',
+                    'TELEGRAM_ALLOWED_USER_IDS')
         if any('REPLACE' in str(values.get(key, '')) for key in telegram):
             raise ConfigurationError('Ainda há campos REPLACE na configuração do Telegram.')
         TelegramConfig.from_mapping(values, worker=True)
@@ -404,7 +420,9 @@ Comandos iniciais:
 | `/pendentes` | Uploads pendentes confirmados. |
 | `/entregues` | Histórico de entregas; não presume aprovação. |
 | `/encerradas` | Encerradas sem entrega. |
+| `/futuras` | Período ainda não aberto. |
 | `/verificar` | Inconclusivas, fonte e convite a feedback. |
+| `/resumo` | Contagem por situação e avisos de cobertura. |
 | `/configuracoes` | Retenção e uso/quota do cache. |
 | `/materiais` | Materiais selecionáveis; tocar em um autoriza o envio daquela cópia pelo Telegram. |
 | `/relatar` | Relato revisável sobre o software; nenhuma issue é aberta automaticamente. |
@@ -447,6 +465,14 @@ software. Consulte [comandos do Telegram](https://core.telegram.org/bots/feature
 
 Ao terminar o teste em primeiro plano, use **Ctrl+C** para parar o worker antes
 de iniciar o serviço da próxima etapa.
+
+Os botões de documento tentam primeiro a cópia válida no cache local. Se a
+observação da atividade ou a validação do arquivo estiver antiga, ou a cópia
+estiver ausente ou inválida, o bot avisa que fará uma verificação no ILIAS que
+tem limite total de dois minutos para a solicitação. O envio solicitado do cache
+aceita observação pendente atual com até doze horas, respeitando validação e
+expiração do arquivo. Os botões distinguem a disponibilidade e a necessidade de
+revalidação. O arquivo enviado mantém o nome de origem.
 
 ## 10. Mantenha o worker ativo com systemd de usuário
 

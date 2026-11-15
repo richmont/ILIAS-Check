@@ -242,3 +242,25 @@ def test_get_retries_one_request_exception_only() -> None:
     transport = SafeTransport(CONFIG, session=session, sleeper=lambda _: None)
     assert transport.get("https://ilias.example.edu/goto.php?target=fold_1001").status_code == 200
     assert transport.request_count == 2
+
+
+def test_transport_reports_each_attempt_to_the_progress_hook() -> None:
+    seen: list[int] = []
+    session = FakeSession(
+        [
+            Response(status_code=429, headers={"Retry-After": "1"}),
+            Response(),
+        ]
+    )
+    transport = SafeTransport(
+        CONFIG, session=session, sleeper=lambda _: None, on_request=lambda: seen.append(1)
+    )
+    transport.get("https://ilias.example.edu/goto.php?target=fold_1001")
+    assert transport.request_count == 2
+    assert len(seen) == 2
+
+
+def test_transport_without_progress_hook_still_counts_requests() -> None:
+    transport = SafeTransport(CONFIG, session=FakeSession([Response()]))
+    transport.get("https://ilias.example.edu/goto.php?target=fold_1001")
+    assert transport.request_count == 1

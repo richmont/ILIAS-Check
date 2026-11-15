@@ -164,9 +164,12 @@ def _promote_legacy_identity(
 
 
 class RepositoryCrawler:
-    def __init__(self, config: CollectorConfig, authenticator: Authenticator) -> None:
+    def __init__(
+        self, config: CollectorConfig, authenticator: Authenticator, progress=None
+    ) -> None:
         self.config = config
         self.authenticator = authenticator
+        self.progress = progress
 
     def collect(self) -> TraversalResult:
         objects: dict[str, InventoryObject] = {}
@@ -191,8 +194,14 @@ class RepositoryCrawler:
         expanded_paths: set[tuple[str, str, tuple[str, ...]]] = set()
         root_object_pairs: set[tuple[str, str]] = set()
         resolved_aliases: dict[str, ObjectRef] = {}
+        current_root: str | None = None
         while queue:
             item = queue.popleft()
+            if self.progress is not None and item.root_id != current_root:
+                current_root = item.root_id
+                self.progress.root(
+                    self.config.roots.index(item.root_id) + 1, item.root_id
+                )
             ref = resolved_aliases.get(item.ref.key, item.ref)
             if item.ref.key != ref.key and item.ref.key in objects:
                 _promote_legacy_identity(
@@ -251,6 +260,9 @@ class RepositoryCrawler:
                     ),
                 )
                 objects[key] = record
+
+            if self.progress is not None:
+                self.progress.objects(len(objects))
 
             path_record = {"root_id": item.root_id, "path": list(item.path)}
             if path_record not in record.paths:

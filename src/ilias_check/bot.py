@@ -1,11 +1,13 @@
-"""Single-owner Portuguese long-poll worker over shared observations and cache."""
+"""Authorized Portuguese long-poll worker over shared observations and cache."""
 from __future__ import annotations
 
-from collections import deque
+from collections import Counter, deque
+from contextlib import ExitStack
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 import hashlib
 import json
+import logging
 import secrets
 import time
 
@@ -14,23 +16,69 @@ from ilias_check.cache_config import CacheError
 from ilias_check.collector import collect_inventory
 from ilias_check.monitor import effective_config, maintain
 from ilias_check.monitor_state import MonitorState
-from ilias_check.private_storage import process_lock
-from ilias_check.support_cache import SupportCache, association_id, cache_inventory, instant, stamp
-from ilias_check.telegram import TelegramClient, TelegramError, activity_message, redact, safe_link, source_buttons
+from ilias_check.private_storage import RuntimeStoreBusy, process_lock
+from ilias_check.support_cache import (
+    INTERACTIVE_ACTIVITY_MAX_AGE, SupportCache, association_id, cache_inventory, instant, stamp,
+)
+from ilias_check.telegram import (
+    TelegramClient, TelegramError, activity_message, format_time, redact, safe_link,
+    source_buttons, material_button_label, MATERIAL_AVAILABILITY,
+)
 from ilias_check.transport import SafeTransport
+from ilias_check.timeouts import MaterialRequestTimeout, material_request_deadline
+
+_LOG = logging.getLogger(__name__)
 
 _ISSUES = "https://github.com/richmont/ILIAS-Check/issues/new"
 _HELP = ("/pendentes — uploads pendentes\n/entregues — histórico de entregas\n/encerradas — encerradas sem entrega\n"
-         "/verificar — inconclusivas\n/materiais — apoio disponível\n/configuracoes — retenção e uso\n"
+         "/futuras — ainda não abertas\n/verificar — inconclusivas\n/resumo — contagem por situação\n"
+         "/materiais — apoio disponível\n/configuracoes — retenção e uso\n"
          "/relatar — feedback sobre este software\n/cancelar — cancelar diálogo\n"
+         "As listas vêm paginadas; toque no número para ver detalhes, links e downloads, ou em “Exibir todas”. "
          "Os textos do ILIAS permanecem originais. A fonte pode exigir login no navegador. Entrega não significa aprovação. "
          "Envie respostas às atividades manualmente no ILIAS; arquivos recebidos aqui não são processados. "
          "Rascunhos de relatos são descartados após reinício ou 30 minutos.")
-_VIEWS = {"/pendentes": "pending", "/entregues": "submitted", "/encerradas": "closed_without_submission", "/verificar": "unknown"}
+_VIEWS = {"/pendentes": "pending", "/entregues": "submitted", "/encerradas": "closed_without_submission",
+          "/futuras": "not_yet_open", "/verificar": "unknown"}
+_TITLES = {"pending": "Pendentes", "submitted": "Entregues",
+           "closed_without_submission": "Encerradas sem entrega",
+           "not_yet_open": "Ainda não abertas", "unknown": "Inconclusivas"}
+_EMPTY = {
+    "pending": "Nenhuma atividade pendente confirmada; isso não confirma que todas estejam concluídas.",
+    "submitted": "Nenhuma entrega confirmada no histórico.",
+    "closed_without_submission": "Nenhuma atividade encerrada sem entrega registrada.",
+    "not_yet_open": "Nenhuma atividade com período ainda não aberto.",
+    "unknown": "Nenhuma atividade inconclusiva registrada.",
+}
+_STATUS_LABELS = (("pending", "pendentes"), ("submitted", "entregues"),
+                  ("closed_without_submission", "encerradas sem entrega"),
+                  ("not_yet_open", "ainda não abertas"), ("excluded", "excluídas"),
+                  ("unknown", "inconclusivas"))
+_COMMANDS = (
+    {"command": "start", "description": "Iniciar e ver a ajuda"},
+    {"command": "ajuda", "description": "Lista de comandos"},
+    {"command": "pendentes", "description": "Uploads pendentes"},
+    {"command": "entregues", "description": "Histórico de entregas"},
+    {"command": "encerradas", "description": "Encerradas sem entrega"},
+    {"command": "futuras", "description": "Ainda não abertas"},
+    {"command": "verificar", "description": "Casos inconclusivos"},
+    {"command": "resumo", "description": "Contagem por situação"},
+    {"command": "materiais", "description": "Materiais de apoio disponíveis"},
+    {"command": "configuracoes", "description": "Retenção e uso do cache"},
+    {"command": "retencao", "description": "Ajustar retenção de materiais"},
+    {"command": "relatar", "description": "Relatar problema do software"},
+    {"command": "cancelar", "description": "Cancelar diálogo"},
+)
 _FIELDS = ("descrição", "esperado", "ocorrido", "link")
+_PAGE = 5
 _PROMPTS = ("Descreva o problema deste software (somente texto, até 800 caracteres).",
             "Como você esperava que o bot se comportasse ou exibisse a atividade?",
             "O que o bot exibiu ou fez?", "Link original da atividade (HTTPS sem sessão), ou - para omitir.")
+
+
+def _counts_text(counts):
+    parts = [f"{counts[status]} {label}" for status, label in _STATUS_LABELS if counts.get(status)]
+    return ", ".join(parts)
 
 
 class Bot:
@@ -39,18 +87,37 @@ class Bot:
         self.clock = clock or (lambda: datetime.now(timezone.utc))
         self.collector = collector
         self.retrieve = retrieve or self._retrieve
-        self.requests = deque(maxlen=30)
+        self.requests = {}
         self.tokens = {}
         self.draft = None
+        self.drafts = {}
         self.last_check = None
         self.last_maintenance = None
 
-    def authorized(self, update):
+    @staticmethod
+    def _sender(update):
         callback = update.get("callback_query")
         message = callback.get("message", {}) if callback else update.get("message", {})
         sender = callback.get("from", {}) if callback else message.get("from", {})
-        chat = message.get("chat", {})
-        return str(sender.get("id")) == self.telegram.allowed_user_id and str(chat.get("id")) == self.telegram.chat_id and chat.get("type") == "private" and not sender.get("is_bot")
+        return sender, message.get("chat", {})
+
+    def _authorization_denial(self, update):
+        sender, chat = self._sender(update)
+        if sender.get("is_bot"):
+            return "bot_sender"
+        if chat.get("type") != "private":
+            return "non_private_chat"
+        user_id, chat_id = str(sender.get("id")), str(chat.get("id"))
+        if user_id not in self.telegram.permitted_user_ids:
+            return "user_not_allowed"
+        # The notification destination must not veto a listed user's own chat.
+        # Retain the explicitly configured primary pair for existing setups.
+        if chat_id == user_id or (chat_id == self.telegram.chat_id and user_id == self.telegram.allowed_user_id):
+            return None
+        return "private_chat_mismatch"
+
+    def authorized(self, update):
+        return self._authorization_denial(update) is None
 
     def handle(self, update):
         update_id = update.get("update_id")
@@ -59,14 +126,34 @@ class Bot:
             return
         # Claim before side effects: replay cannot repeat settings or a document send.
         self.state.set_cursor(cursor, update_id + 1)
-        if not self.authorized(update):
+        denial = self._authorization_denial(update)
+        if denial:
+            _LOG.warning("telegram_update_ignored reason=%s", denial)
             return
+        uid = str(self._sender(update)[0].get("id"))
         now = self.clock()
-        while self.requests and now - self.requests[0] >= timedelta(minutes=1):
-            self.requests.popleft()
-        if len(self.requests) >= 20:
+        requests = self.requests.setdefault(uid, deque(maxlen=30))
+        while requests and now - requests[0] >= timedelta(minutes=1):
+            requests.popleft()
+        if len(requests) >= 20:
             return
-        self.requests.append(now)
+        requests.append(now)
+        self.draft = self.drafts.get(uid)
+        original_client = self.client
+        try:
+            route = getattr(original_client, "for_chat", None)
+            if callable(route):
+                self.client = route(self._sender(update)[1]["id"])
+            self._dispatch(update, uid, now)
+        finally:
+            self.client = original_client
+            if self.draft is None:
+                self.drafts.pop(uid, None)
+            else:
+                self.drafts[uid] = self.draft
+            self.draft = None
+
+    def _dispatch(self, update, uid, now):
         if self.draft and now - self.draft["started"] >= timedelta(minutes=30):
             self.draft = None
             self.client.message("O rascunho expirou. Inicie novamente com /relatar.")
@@ -76,7 +163,7 @@ class Bot:
                 self.client.call("answerCallbackQuery", {"callback_query_id": callback["id"]})
             except TelegramError:
                 pass
-            return self._callback(callback.get("data", ""))
+            return self._callback(callback.get("data", ""), uid)
         message = update.get("message", {})
         text = message.get("text")
         if not isinstance(text, str):
@@ -103,17 +190,19 @@ class Bot:
             self.client.message(self._report() + f"\nNenhuma issue foi aberta. Compartilhe manualmente após revisar: {_ISSUES}")
             self.draft = None
         elif command.startswith("/"):
-            if command in {"/start", "/ajuda"}:
+            if command == "/start":
                 self.client.message(_HELP)
-                self._view("pending", 1)
+                self._view("pending", 1, uid)
+            elif command == "/ajuda":
+                self.client.message(_HELP)
             elif command in _VIEWS:
-                page = int(parts[1]) if len(parts) == 2 and parts[1].isdigit() else 1
-                self._view(_VIEWS[command], page)
+                self._view(_VIEWS[command], 1, uid)
             elif command == "/materiais":
-                page = int(parts[1]) if len(parts) == 2 and parts[1].isdigit() else 1
-                self._materials(page)
+                self._materials(1, uid)
             elif command == "/configuracoes":
                 self._settings()
+            elif command == "/resumo":
+                self._summary()
             elif command == "/retencao":
                 self._retention(parts[1:])
             else:
@@ -139,82 +228,314 @@ class Bot:
                     result.append((json.loads(row["activity"]), row["checked_at"], True))
         return result
 
-    def _token(self, action, payload):
+    def _token(self, action, payload, owner):
         now = self.clock()
         self.tokens = {k: v for k, v in self.tokens.items() if now - v[2] < timedelta(minutes=30)}
         while len(self.tokens) >= 500:
             self.tokens.pop(next(iter(self.tokens)))
         token = secrets.token_urlsafe(12)
-        self.tokens[token] = (action, payload, now)
+        self.tokens[token] = (action, payload, now, owner)
         return token
 
-    def _view(self, status, page):
+    def _view(self, status, page, uid):
         rows = self._observations(status)
-        page_count = max(1, (len(rows) + 3) // 4)
+        page_count = max(1, (len(rows) + _PAGE - 1) // _PAGE)
         page = min(max(page, 1), page_count)
         snapshot = self.state.snapshot() or {}
-        incomplete = not snapshot.get("observation_complete", False) or not snapshot.get("classification", {}).get("complete", False) or any(not c["complete"] for c in snapshot.get("coverage", []))
-        text = f"Observação mais recente: {snapshot.get('checked_at', 'nenhuma')}. Página {page}/{page_count}."
-        if incomplete:
-            text += " Verificação incompleta; consulte /verificar."
+        plural = "s" if len(rows) != 1 else ""
+        lines = [f"{_TITLES[status]} — {len(rows)} atividade{plural}; "
+                 f"observação de {self._observed(snapshot)}; página {page}/{page_count}."]
         if not rows:
-            text += " Nenhuma atividade confirmada nesta categoria; isso não confirma que todas estejam concluídas."
-        self.client.message(text)
-        for activity, checked, stale in rows[(page - 1) * 4:page * 4]:
-            stale = stale or self.clock() - instant(checked) > timedelta(hours=12)
-            self.client.message(activity_message(activity, checked, incomplete, stale), source_buttons(activity))
-        if page < page_count:
-            command = next((k for k, v in _VIEWS.items() if v == status), "/pendentes")
-            self.client.message(f"Próxima página: {command} {page + 1}")
+            lines.append(_EMPTY[status])
+            counts = self._counts(snapshot)
+            if counts:
+                lines.append(f"Resumo: {_counts_text(counts)}; use /resumo.")
+        if self._incomplete(snapshot):
+            if status == "unknown":
+                lines.append(self._health_text(snapshot) or "A última verificação não foi concluída.")
+            else:
+                lines.append("Verificação incompleta; detalhes em /verificar.")
+        first = (page - 1) * _PAGE + 1
+        shown = rows[first - 1:first - 1 + _PAGE]
+        if shown:
+            lines.append("")
+            for offset, (activity, checked, stale) in enumerate(shown, first):
+                lines.append(f"{offset}. {self._summary_line(activity, checked, stale)}")
+            lines.append("")
+            lines.append("Toque no número para ver prazo, motivo, links e downloads.")
+        self.client.message("\n".join(lines),
+                            self._page_buttons(status, page, page_count, len(rows), shown, first, uid))
 
-    def _materials(self, page=1):
-        candidates = [(activity, material) for activity, _, stale in self._observations("pending") if not stale
+    def _page_buttons(self, status, page, page_count, total, shown, first, uid):
+        rows = []
+        if page_count > 1:
+            nav = []
+            if page > 1:
+                nav.append({"text": "◀ Anterior",
+                            "callback_data": self._token("page", (status, page - 1), uid)})
+            if page < page_count:
+                nav.append({"text": "Próxima ▶",
+                            "callback_data": self._token("page", (status, page + 1), uid)})
+            rows.append(nav)
+        if shown:
+            rows.append([{"text": f"Exibir todas ({total})",
+                          "callback_data": self._token("all", (status,), uid)}])
+        if shown:
+            rows.append([{"text": str(first + index),
+                          "callback_data": self._token("detail", (status, association_id(activity)), uid)}
+                         for index, (activity, _, _) in enumerate(shown)])
+        return rows
+
+    def _summary_line(self, activity, checked, stale):
+        hints = []
+        if activity["status"] in {"pending", "not_yet_open"}:
+            if activity.get("deadline_at"):
+                hints.append("prazo " + format_time(activity["deadline_at"], self._timezone()))
+            elif activity.get("deadline_text"):
+                hints.append(str(activity["deadline_text"])[:60])
+            else:
+                hints.append("sem prazo")
+        elif activity["status"] == "unknown":
+            hints.append("precisa verificar")
+        elif activity["status"] == "submitted":
+            history = activity.get("submission_history") or []
+            moment = format_time(history[0]["submitted_at"], self._timezone()) if history and history[0].get("submitted_at") else None
+            hints.append("entrega " + moment if moment else "entrega registrada")
+        hint = " — " + "; ".join(hints) if hints else ""
+        old = " (observação antiga)" if stale or self.clock() - instant(checked) > timedelta(hours=12) else ""
+        return " ".join(activity["title"].split())[:120] + hint + old
+
+    def _material_availability(self, references):
+        try:
+            config = effective_config(self.config, self.state)
+            return SupportCache(config, self.clock).availability(references)
+        except Exception:
+            # A locked or unreadable store must not become a claim that bytes
+            # are available, or that the document has never been downloaded.
+            return {(association_id(activity), document_id): "unknown"
+                    for activity, document_id, _, _ in references}
+
+    @staticmethod
+    def _material_legend():
+        return " · ".join(icon + " " + label for icon, label in MATERIAL_AVAILABILITY.values())
+
+    def _send_detail(self, activity, checked, stale):
+        snapshot = self.state.snapshot() or {}
+        stale = stale or self.clock() - instant(checked) > timedelta(hours=12)
+        buttons = source_buttons(activity)
+        references = [(activity, m["document_id"], checked, not stale)
+                      for m in activity.get("support_documents", [])
+                      if m.get("document_id") and m.get("selected_for_support") and m.get("role") == "support"][:2]
+        availability = self._material_availability(references) if references and activity["status"] == "pending" else {}
+        if activity["status"] == "pending":
+            buttons += self.state.material_buttons(activity, self.clock(), availability=availability)
+        # The inventory may predate a manual download. Render local status from
+        # the current manifest rather than its old metadata-only cache flag.
+        text = activity_message(activity, checked, self._incomplete(snapshot), stale, self._timezone(), availability)
+        if any("callback_data" in button for row in buttons for button in row):
+            disclosure = "Baixar autoriza o envio dessa cópia pelo Telegram. O bot tenta o cache válido primeiro e verifica o ILIAS se necessário."
+            available = max(0, self.telegram.max_message_chars - len(disclosure) - 2)
+            legend = self._material_legend()
+            available = max(0, available - len(legend) - 1)
+            text = text[:available] + "\n\n" + legend + "\n" + disclosure
+        self.client.message(text, buttons)
+
+    def _all(self, status, uid):
+        rows = self._observations(status)
+        if not rows:
+            self._view(status, 1, uid)
+            return
+        snapshot = self.state.snapshot() or {}
+        self.client.message(f"{_TITLES[status]} — todas as {len(rows)} atividades; "
+                            f"observação de {self._observed(snapshot)}.")
+        for activity, checked, stale in rows:
+            self._send_detail(activity, checked, stale)
+
+    def _incomplete(self, snapshot):
+        return (not snapshot.get("observation_complete", False)
+                or not snapshot.get("classification", {}).get("complete", False)
+                or any(not item["complete"] for item in snapshot.get("coverage", [])))
+
+    def _timezone(self):
+        return self.config.classification_policy.timezone
+
+    def _observed(self, snapshot):
+        checked = snapshot.get("checked_at")
+        return format_time(checked, self._timezone()) if checked else "nenhuma"
+
+    def _health_text(self, snapshot):
+        parts = []
+        incomplete = [item for item in snapshot.get("coverage", []) if not item.get("complete")]
+        if incomplete:
+            roots = ", ".join(str(item.get("root_id")) for item in incomplete)
+            parts.append("Cobertura incompleta no(s) root(s) " + roots + ".")
+            warnings = sorted({w for item in incomplete for w in item.get("warnings", [])})
+            if warnings:
+                shown = ", ".join(warnings[:4])
+                if len(warnings) > 4:
+                    shown += f" (+{len(warnings) - 4})"
+                parts.append("Avisos: " + shown + ".")
+        if not snapshot.get("activities"):
+            parts.append("A extração não registrou atividades; confira os roots configurados e o acesso ao curso.")
+        if not snapshot.get("classification", {}).get("complete", False):
+            parts.append("A classificação contém casos sem confirmação.")
+        if not snapshot.get("observation_complete", False) and not parts:
+            parts.append("A última verificação não foi concluída.")
+        return " ".join(parts)
+
+    def _counts(self, snapshot):
+        return Counter(activity.get("status") for activity in snapshot.get("activities", []))
+
+    def _summary(self):
+        snapshot = self.state.snapshot() or {}
+        counts = self._counts(snapshot)
+        if counts:
+            text = f"Resumo da observação de {self._observed(snapshot)}: {_counts_text(counts)}."
+        else:
+            text = f"Resumo da observação de {self._observed(snapshot)}: nenhuma atividade registrada."
+        health = self._health_text(snapshot)
+        if health:
+            text += " " + health
+        self.client.message(text)
+
+    def _materials(self, page, uid):
+        candidates = [(activity, material, checked) for activity, checked, stale in self._observations("pending") if not stale
                       for material in activity.get("support_documents", [])
                       if material.get("selected_for_support") and material.get("role") == "support"]
         page_count = max(1, (len(candidates) + 9) // 10)
         page = min(max(page, 1), page_count)
         buttons = []
-        for activity, material in candidates[(page - 1) * 10:page * 10]:
-            token = self._token("download", (association_id(activity), material["document_id"]))
-            buttons.append([{"text": ("Baixar pelo Telegram: " + material["title"])[:64], "callback_data": token}])
+        shown = candidates[(page - 1) * 10:page * 10]
+        availability = self._material_availability([
+            (activity, material["document_id"], checked, True) for activity, material, checked in shown]) if shown else {}
+        for activity, material, checked in shown:
+            token = self._token("download", (association_id(activity), material["document_id"]), uid)
+            buttons.append([{"text": material_button_label(material, availability.get((association_id(activity), material["document_id"]))), "callback_data": token}])
+        if page_count > 1:
+            nav = []
+            if page > 1:
+                nav.append({"text": "◀ Anterior",
+                            "callback_data": self._token("materials_page", (page - 1,), uid)})
+            if page < page_count:
+                nav.append({"text": "Próxima ▶",
+                            "callback_data": self._token("materials_page", (page + 1,), uid)})
+            buttons.append(nav)
         self.client.message("Ao tocar em um material, você autoriza enviar essa cópia pelo Telegram. Isso não ativa anexos automáticos futuros. "
-                            "O envio exige nova verificação no ILIAS; ele pode estar mais atualizado. Cópias já enviadas não podem ser revogadas. "
-                            f"Página {page}/{page_count}." if buttons else
+                            "O bot tenta o cache válido primeiro e verifica o ILIAS se necessário; a fonte pode estar mais atualizada. Cópias já enviadas não podem ser revogadas. "
+                            + self._material_legend() + f" Página {page}/{page_count}." if buttons else
                             "Nenhum apoio confirmado disponível. Confira a atividade no ILIAS ou /verificar.", buttons)
-        if page < page_count:
-            self.client.message(f"Próxima página: /materiais {page + 1}")
 
-    def _callback(self, token):
-        entry = self.tokens.pop(token, None)
-        if not entry or self.clock() - entry[2] >= timedelta(minutes=30):
-            self.client.message("Ação expirada ou desconhecida. Abra o menu novamente.")
-            return
-        action, payload, _ = entry
+
+    def _callback(self, token, uid):
+        if token.startswith("m:"):
+            claim = self.state.claim_material(token[2:], self.clock())
+            if claim is None:
+                self.client.message("Ação expirada ou desconhecida. Abra o menu novamente.")
+                return
+            action, payload = "download", claim
+        else:
+            entry = self.tokens.pop(token, None)
+            if (not entry or entry[3] != uid
+                    or self.clock() - entry[2] >= timedelta(minutes=30)):
+                self.client.message("Ação expirada ou desconhecida. Abra o menu novamente.")
+                return
+            action, payload, _, _ = entry
         if action != "download":
+            if action == "page":
+                self._view(payload[0], payload[1], uid)
+            elif action == "materials_page":
+                self._materials(payload[0], uid)
+            elif action == "detail":
+                # Resolve through the same view as the list: submitted history and
+                # derived unknown rows must not silently become a current pending item.
+                row = next((row for row in self._observations(payload[0])
+                            if association_id(row[0]) == payload[1]), None)
+                if row is None:
+                    self.client.message("A atividade mudou desde a listagem. Abra o menu novamente.")
+                else:
+                    self._send_detail(*row)
+            elif action == "all":
+                self._all(payload[0], uid)
             return
         aid, document_id = payload
-        now = self.clock()
-        last_check = self.state.cursor("support_check_at")
-        if last_check and now.timestamp() - last_check < 300:
-            self.client.message("Uma verificação de materiais já foi feita recentemente. Aguarde cinco minutos e consulte o ILIAS.")
-            return
-        self.last_check = now
-        previous = self.state.db.execute("SELECT activity FROM observations WHERE id=?", (aid,)).fetchone()
-        activity = json.loads(previous["activity"]) if previous else None
+        activity = None
+        stage = "prepare"
         try:
-            with self.state.run_lock():
-                self.state.set_cursor("support_check_at", int(now.timestamp()))
+            previous = self.state.db.execute("SELECT * FROM observations WHERE id=?", (aid,)).fetchone()
+            activity = json.loads(previous["activity"]) if previous else None
+            self.client.message("Verificando o cache local para enviar o documento…")
+            stage = "deadline"
+            with material_request_deadline():
+                stage = "configuration"
                 config = effective_config(self.config, self.state)
-                # The scan observes metadata only; consent covers only the selected material.
-                inventory = self.collector(replace(config, cache_policy=replace(config.cache_policy, enabled=False)))
-                self.state.observe(inventory, self.clock(), self.telegram.reminder_hours, self.telegram.send_documents)
-                activity = next((a for a in inventory["activities"] if association_id(a) == aid), None)
-                material = next((m for m in activity.get("support_documents", []) if m["document_id"] == document_id and m["selected_for_support"] and m["role"] == "support"), None) if activity else None
-                if not activity or activity["status"] != "pending" or not material:
-                    raise CacheError("Eligibility not confirmed.")
-                self.retrieve(config, inventory, activity, material)
-        except Exception:
-            self.client.message("Não foi possível confirmar uma cópia elegível agora. Consulte o ILIAS e /verificar; nenhum estado da atividade foi alterado.", source_buttons(activity) if activity else [])
+                stage = "cache"
+                # Local delivery uses the cache lease, not the monitor's long
+                # traversal lease. A running source scan cannot block valid bytes.
+                if previous and previous["current"] and self._send_cached(
+                        config, document_id, activity, previous["checked_at"]):
+                    return
+                stage = "source_lock"
+                with self.state.run_lock():
+                    stage = "source_refresh"
+                    now = self.clock()
+                    last_check = self.state.cursor("support_check_at")
+                    if last_check and now.timestamp() - last_check < 300:
+                        self.client.message("Nenhuma cópia local elegível está pronta. Uma verificação de materiais já foi feita recentemente; aguarde cinco minutos e abra o material novamente.", source_buttons(activity) if activity else [])
+                        return
+                    self.last_check = now
+                    self.state.set_cursor("support_check_at", int(now.timestamp()))
+                    self.client.message("Não há cópia local pronta para envio. Vou verificar a atividade e o material no ILIAS; o limite desta solicitação é de dois minutos.")
+                    # The scan observes metadata only; consent covers only the selected material.
+                    inventory = self.collector(replace(config, cache_policy=replace(config.cache_policy, enabled=False)))
+                    self.state.observe(inventory, self.clock(), self.telegram.reminder_hours, self.telegram.send_documents)
+                    refreshed = next((a for a in inventory["activities"] if association_id(a) == aid), None)
+                    material = next((m for m in refreshed.get("support_documents", []) if m["document_id"] == document_id and m["selected_for_support"] and m["role"] == "support"), None) if refreshed else None
+                    if not refreshed or refreshed["status"] != "pending" or not material:
+                        raise CacheError("Eligibility not confirmed.")
+                    activity = refreshed
+                    stage = "retrieve"
+                    self.retrieve(config, inventory, activity, material)
+        except MaterialRequestTimeout:
+            _LOG.warning("material_request_failed stage=%s category=timeout", stage)
+            self.client.message("A solicitação atingiu o limite de dois minutos e foi interrompida. Nenhum envio foi confirmado. Consulte o material no ILIAS ou abra o menu novamente após atualizar o monitor.", source_buttons(activity) if activity else [])
+        except RuntimeStoreBusy:
+            _LOG.warning("material_request_failed stage=%s category=runtime_busy", stage)
+            text = ("O cache está sendo utilizado por outra operação. Aguarde a conclusão e abra o material novamente, ou consulte o ILIAS." if stage == "cache" else
+                    "Uma verificação do monitor está em andamento e a cópia local ainda não pôde ser enviada. Aguarde a conclusão e abra o material novamente, ou consulte o ILIAS.")
+            self.client.message(text, source_buttons(activity) if activity else [])
+        except TelegramError as exc:
+            _LOG.warning("material_request_failed stage=%s category=telegram", stage)
+            text = ("O arquivo excede o limite de envio pelo Telegram." if str(exc) == "telegram_document_too_large" else
+                    "Não foi possível confirmar o envio pelo Telegram. Abra o material novamente para tentar; o ILIAS continua sendo a fonte oficial.")
+            self.client.message(text, source_buttons(activity) if activity else [])
+        except Exception as exc:
+            _LOG.warning("material_request_failed stage=%s category=%s", stage, type(exc).__name__)
+            text = ("Não foi possível iniciar o limite de tempo desta solicitação. Reinicie o worker e tente novamente." if stage == "deadline" else
+                    "Não foi possível confirmar uma cópia elegível agora. Consulte o ILIAS e /verificar; nenhum estado da atividade foi alterado.")
+            self.client.message(text, source_buttons(activity) if activity else [])
+
+    def _send_cached(self, config, document_id, activity, checked_at):
+        if not config.cache_policy.directory.expanduser().exists():
+            return False
+        # Catch only failure to open an eligible local copy. An upload failure
+        # must not trigger another collection/download or a second send attempt.
+        with ExitStack() as stack:
+            try:
+                source, entry = stack.enter_context(
+                    SupportCache(config, self.clock).delivery(
+                        document_id, activity, checked_at, activity_max_age=INTERACTIVE_ACTIVITY_MAX_AGE))
+            except RuntimeStoreBusy:
+                raise
+            except (CacheError, OSError, ValueError):
+                return False
+            # Collection may commit a newer observation after the click. Recheck
+            # its identity while the cache lease protects the selected bytes.
+            latest = self.state.db.execute("SELECT * FROM observations WHERE id=?", (association_id(activity),)).fetchone()
+            if (not latest or not latest["current"] or latest["checked_at"] != checked_at
+                    or json.loads(latest["activity"]) != activity):
+                return False
+            self.client.document(source, entry, activity, checked_at, self._timezone())
+        return True
 
     def _retrieve(self, config, inventory, activity, material):
         for a in inventory["activities"]:
@@ -226,7 +547,7 @@ class Bot:
             updated = cache_inventory(inventory, config, Authenticator(config, transport), self.clock)
             activity = next(a for a in updated["activities"] if association_id(a) == association_id(activity))
             with SupportCache(config, self.clock).delivery(material["document_id"], activity, updated["checked_at"]) as (source, entry):
-                self.client.document(source, entry, activity, updated["checked_at"])
+                self.client.document(source, entry, activity, updated["checked_at"], self._timezone())
         finally:
             transport.close()
 
@@ -241,7 +562,7 @@ class Bot:
             except Exception:
                 usage = "temporariamente indisponível"
         self.client.message(f"Sem prazo: {policy.no_deadline_hours} horas (padrão: 168). Limite adicional: {policy.retention_max_hours or 'padrão, sem limite adicional'}. "
-                            f"Prazo/entrega confirmada continuam limites superiores. Uso gerenciado: {usage}; quota: {policy.max_bytes / 1000000:g} MB. Medido em {stamp(self.clock())}. "
+                            f"Prazo/entrega confirmada continuam limites superiores. Uso gerenciado: {usage}; quota: {policy.max_bytes / 1000000:g} MB. Medido em {format_time(stamp(self.clock()), self._timezone())}. "
                             "Expiração e remoção são automáticas; isto não é o uso total do disco.\n"
                             "/retencao sem_prazo 24\n/retencao limite 48\n/retencao padrao\n"
                             "Aumentar a duração não recupera cópias expiradas; uma nova obtenção exige verificação atual.")
@@ -291,6 +612,20 @@ class Bot:
             self.last_maintenance = now
 
 
+def _telegram_failure_category(error):
+    if error.http_status == 409:
+        return "polling_conflict"
+    if error.http_status == 429:
+        return "rate_limited"
+    if error.http_status == 401:
+        return "credentials_rejected"
+    if error.http_status == 403:
+        return "access_refused"
+    if error.http_status:
+        return "api_error"
+    return "connection_or_delivery_error"
+
+
 def run_bot(config, telegram, client=None, clock=None, max_polls=None, sleeper=time.sleep):
     owned = client is None
     client = client or TelegramClient(telegram)
@@ -300,23 +635,38 @@ def run_bot(config, telegram, client=None, clock=None, max_polls=None, sleeper=t
             lock_id = hashlib.sha256((telegram.token + ":" + telegram.chat_id).encode()).hexdigest()
             with process_lock(state.fd, "worker-" + lock_id + ".lock"):
                 bot = Bot(config, telegram, state, client, clock)
+                register = getattr(client, "set_commands", None)
+                if callable(register):
+                    try:
+                        register(_COMMANDS)
+                    except TelegramError as exc:
+                        _LOG.warning("telegram_worker_menu_failed category=%s http_status=%s",
+                                     _telegram_failure_category(exc), exc.http_status)
                 cursor = "updates:" + hashlib.sha256(telegram.token.encode()).hexdigest()
                 failures = 0
                 polls = 0
                 while max_polls is None or polls < max_polls:
                     bot.maintenance_tick()
                     try:
+                        stage = "poll"
                         updates = client.updates(state.cursor(cursor))
+                        stage = "handle_update"
                         for update in updates[:25]:
                             bot.handle(update)
                         failures = 0
                     except TelegramError as exc:
                         failures += 1
+                        delay = min(max(2 ** failures, exc.retry_after), 60)
+                        _LOG.warning("telegram_worker_retry stage=%s failures=%d category=%s http_status=%s delay_seconds=%d",
+                                     stage, failures, _telegram_failure_category(exc), exc.http_status,
+                                     max(delay, exc.retry_after))
+                        if exc.http_status == 409:
+                            _LOG.warning("telegram_worker_polling_conflict: stop other workers using this bot, including on other machines, and check for an active webhook")
                         if failures >= 5:
-                            raise TelegramError("telegram_worker_retries_exhausted") from None
+                            raise TelegramError("telegram_worker_retries_exhausted", http_status=exc.http_status) from None
                         if exc.retry_after > 60:
-                            raise TelegramError("telegram_worker_deferred", exc.retry_after) from None
-                        sleeper(min(max(2 ** failures, exc.retry_after), 60))
+                            raise TelegramError("telegram_worker_deferred", exc.retry_after, http_status=exc.http_status) from None
+                        sleeper(delay)
                     polls += 1
     finally:
         if owned:
