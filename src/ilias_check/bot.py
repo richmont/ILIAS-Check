@@ -239,7 +239,8 @@ class Bot:
         self.client.message(text)
         for activity, checked, stale in rows[(page - 1) * 4:page * 4]:
             stale = stale or self.clock() - instant(checked) > timedelta(hours=12)
-            self.client.message(activity_message(activity, checked, incomplete, stale, self._timezone()), source_buttons(activity))
+            buttons = source_buttons(activity) + self.state.material_buttons(activity, self.clock())
+            self.client.message(activity_message(activity, checked, incomplete, stale, self._timezone()), buttons)
         if page < page_count:
             command = next((k for k, v in _VIEWS.items() if v == status), "/pendentes")
             self.client.message(f"Próxima página: {command} {page + 1}")
@@ -304,12 +305,19 @@ class Bot:
             self.client.message(f"Próxima página: /materiais {page + 1}")
 
     def _callback(self, token, uid):
-        entry = self.tokens.pop(token, None)
-        if (not entry or entry[3] != uid
-                or self.clock() - entry[2] >= timedelta(minutes=30)):
-            self.client.message("Ação expirada ou desconhecida. Abra o menu novamente.")
-            return
-        action, payload, _, _ = entry
+        if token.startswith("m:"):
+            claim = self.state.claim_material(token[2:], self.clock())
+            if claim is None:
+                self.client.message("Ação expirada ou desconhecida. Abra o menu novamente.")
+                return
+            action, payload = "download", claim
+        else:
+            entry = self.tokens.pop(token, None)
+            if (not entry or entry[3] != uid
+                    or self.clock() - entry[2] >= timedelta(minutes=30)):
+                self.client.message("Ação expirada ou desconhecida. Abra o menu novamente.")
+                return
+            action, payload, _, _ = entry
         if action != "download":
             return
         aid, document_id = payload

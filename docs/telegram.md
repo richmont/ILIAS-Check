@@ -129,6 +129,11 @@ by collector limits and throttled to one per five minutes across worker restarts
 | `/verificar [page]` | “Inconclusivo — precisa verificar”, reasons/time/source and feedback invitation |
 | `/resumo` | Count per situation plus coverage warnings |
 | `/materiais [page]` | Explicit selected-material transmission request |
+
+Eligible support files also appear as `Baixar: …` buttons directly under pending
+activity messages, including notifications sent by the monitor. Those buttons are
+single-use, expire after 24 hours and still trigger a fresh ILIAS check before any
+file leaves the host.
 | `/configuracoes` | Retention, measured managed usage/quota/time without host paths |
 | `/retencao sem_prazo 24` | Positive no-deadline retention hours |
 | `/retencao limite 48` | Optional additional cap in hours |

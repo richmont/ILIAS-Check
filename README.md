@@ -177,8 +177,9 @@ Incoming answer files are not downloaded or forwarded to ILIAS.
 The Portuguese interface includes `/pendentes`, `/entregues`, `/encerradas`,
 `/futuras`, `/verificar`, `/resumo`, `/materiais`, `/configuracoes` and `/relatar`.
 A material button discloses transmission through Telegram and authorizes only that
-selected request. The report flow produces a reviewed draft for manual sharing; it
-opens no public issue and contacts no teacher or administrator.
+selected request; eligible files also expose a `Baixar: …` button in pending
+notifications and views. The report flow produces a reviewed draft for manual
+sharing; it opens no public issue and contacts no teacher or administrator.
 
 The monitor and worker are separate processes. The monitor is suitable for an
 external schedule such as every twelve hours; unchanged work does not repeatedly

@@ -6,6 +6,7 @@ from datetime import timedelta
 import hashlib
 import json
 import os
+import secrets
 import sqlite3
 
 from ilias_check.cache_config import CacheError
@@ -51,25 +52,28 @@ class MonitorState:
 
     def _migrate(self):
         version = self.db.execute("PRAGMA user_version").fetchone()[0]
-        if version > 1:
+        if version > 2:
             raise CacheError("Monitor database is newer than this software.")
-        if version == 1:
+        if version == 2:
             return
         with self.db:
             self.db.execute("BEGIN IMMEDIATE")
             version = self.db.execute("PRAGMA user_version").fetchone()[0]
-            if version == 1:
-                return
-            if version > 1:
+            if version > 2:
                 raise CacheError("Monitor database is newer than this software.")
-            self.db.execute("CREATE TABLE snapshot (id INTEGER PRIMARY KEY CHECK(id=1), data TEXT NOT NULL)")
-            self.db.execute("CREATE TABLE observations (id TEXT PRIMARY KEY, activity TEXT NOT NULL, confirmed TEXT, generation TEXT, episode INTEGER NOT NULL, current INTEGER NOT NULL, checked_at TEXT NOT NULL, notified_at TEXT)")
-            self.db.execute("CREATE TABLE events (id TEXT PRIMARY KEY, activity_id TEXT, generation TEXT, kind TEXT NOT NULL, created_at TEXT NOT NULL)")
-            self.db.execute("CREATE TABLE components (event_id TEXT NOT NULL REFERENCES events(id), kind TEXT NOT NULL, document_id TEXT NOT NULL DEFAULT '', state TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0, retry_at TEXT, message_id TEXT, error TEXT, PRIMARY KEY(event_id,kind,document_id))")
-            self.db.execute("CREATE TABLE submission_history (id TEXT PRIMARY KEY, activity TEXT NOT NULL, checked_at TEXT NOT NULL)")
-            self.db.execute("CREATE TABLE preferences (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
-            self.db.execute("CREATE TABLE cursors (name TEXT PRIMARY KEY, value INTEGER NOT NULL)")
-            self.db.execute("PRAGMA user_version=1")
+            if version == 0:
+                self.db.execute("CREATE TABLE snapshot (id INTEGER PRIMARY KEY CHECK(id=1), data TEXT NOT NULL)")
+                self.db.execute("CREATE TABLE observations (id TEXT PRIMARY KEY, activity TEXT NOT NULL, confirmed TEXT, generation TEXT, episode INTEGER NOT NULL, current INTEGER NOT NULL, checked_at TEXT NOT NULL, notified_at TEXT)")
+                self.db.execute("CREATE TABLE events (id TEXT PRIMARY KEY, activity_id TEXT, generation TEXT, kind TEXT NOT NULL, created_at TEXT NOT NULL)")
+                self.db.execute("CREATE TABLE components (event_id TEXT NOT NULL REFERENCES events(id), kind TEXT NOT NULL, document_id TEXT NOT NULL DEFAULT '', state TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0, retry_at TEXT, message_id TEXT, error TEXT, PRIMARY KEY(event_id,kind,document_id))")
+                self.db.execute("CREATE TABLE submission_history (id TEXT PRIMARY KEY, activity TEXT NOT NULL, checked_at TEXT NOT NULL)")
+                self.db.execute("CREATE TABLE preferences (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+                self.db.execute("CREATE TABLE cursors (name TEXT PRIMARY KEY, value INTEGER NOT NULL)")
+                version = 1
+            if version == 1:
+                self.db.execute("CREATE TABLE material_requests (token TEXT PRIMARY KEY, activity_id TEXT NOT NULL, document_id TEXT NOT NULL, created_at TEXT NOT NULL)")
+                version = 2
+            self.db.execute(f"PRAGMA user_version={version}")
 
     @contextmanager
     def run_lock(self):
@@ -99,6 +103,37 @@ class MonitorState:
     def snapshot(self):
         row = self.db.execute("SELECT data FROM snapshot WHERE id=1").fetchone()
         return json.loads(row[0]) if row else None
+
+    def material_buttons(self, activity, now, limit=2):
+        """Create durable single-use download buttons for eligible support files."""
+        documents = [
+            document for document in activity.get("support_documents", [])
+            if document.get("selected_for_support") and document.get("role") == "support"
+            and document.get("document_id")
+        ]
+        if not documents:
+            return []
+        buttons = []
+        with self.db:
+            self.db.execute("DELETE FROM material_requests WHERE created_at < ?",
+                            (stamp(now - timedelta(days=1)),))
+            for document in documents[:limit]:
+                token = secrets.token_urlsafe(12)
+                self.db.execute("INSERT INTO material_requests VALUES (?,?,?,?)",
+                                (token, association_id(activity), document["document_id"], stamp(now)))
+                label = ("Baixar: " + document.get("title", "material"))[:64]
+                buttons.append([{"text": label, "callback_data": "m:" + token}])
+        return buttons
+
+    def claim_material(self, token, now):
+        row = self.db.execute("SELECT * FROM material_requests WHERE token=?", (token,)).fetchone()
+        if row is None:
+            return None
+        with self.db:
+            self.db.execute("DELETE FROM material_requests WHERE token=?", (token,))
+        if now - instant(row["created_at"]) >= timedelta(days=1):
+            return None
+        return row["activity_id"], row["document_id"]
 
     def observe(self, inventory, now, reminder_hours=0, documents=False):
         checked = inventory["checked_at"]

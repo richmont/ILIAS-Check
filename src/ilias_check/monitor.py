@@ -41,7 +41,8 @@ def dispatch(state, config, telegram, client, now, clock):
         try:
             if component["kind"] == "message":
                 if activity:
-                    result = client.message(activity_message(activity, observation["checked_at"], incomplete, timezone_name=config.classification_policy.timezone), source_buttons(activity))
+                    buttons = source_buttons(activity) + state.material_buttons(activity, now)
+                    result = client.message(activity_message(activity, observation["checked_at"], incomplete, timezone_name=config.classification_policy.timezone), buttons)
                 else:
                     unknown = [a for a in snapshot.get("activities", []) if a["status"] == "unknown"]
                     missing = [json.loads(row["activity"]) for row in state.db.execute(

@@ -754,3 +754,50 @@ def test_ajuda_is_help_only_and_start_lists_pending(config, telegram):
         bot.handle(update("/start", uid=2))
         assert "/futuras" in client.messages[1][0]
         assert client.messages[2][0].startswith("Pendentes — observação de")
+
+
+def test_pending_message_offers_single_use_material_button(config, telegram):
+    from ilias_check.monitor import dispatch
+    data = inventory()
+    data["activities"][0]["support_documents"] = [
+        {"document_id": "file:9", "title": "Blatt.pdf", "selected_for_support": True,
+         "role": "support", "state": "metadata_only"}
+    ]
+    with MonitorState(config, telegram.state_dir).open() as state:
+        state.observe(data, NOW)
+        client = Client()
+        dispatch(state, config, telegram, client, NOW, lambda: NOW)
+        callbacks = [button["callback_data"] for row in client.messages[0][1]
+                     for button in row if "callback_data" in button]
+        assert callbacks and callbacks[0].startswith("m:")
+        token = callbacks[0][2:]
+        assert state.claim_material(token, NOW) == ("1:2", "file:9")
+        assert state.claim_material(token, NOW) is None
+
+
+def test_notification_material_button_triggers_explicit_download(config, telegram):
+    data = inventory()
+    data["activities"][0]["support_documents"] = [
+        {"document_id": "file:9", "title": "Blatt.pdf", "selected_for_support": True,
+         "role": "support", "state": "metadata_only"}
+    ]
+    sends = []
+    with MonitorState(config, telegram.state_dir).open() as state:
+        state.observe(data, NOW)
+        token = state.material_buttons(data["activities"][0], NOW)[0][0]["callback_data"]
+        client = Client()
+        bot = Bot(config, telegram, state, client, lambda: NOW,
+                  lambda c: deepcopy(data), lambda *args: sends.append(args))
+        bot.handle(update(callback=token))
+        assert len(sends) == 1
+        bot.handle(update(uid=2, callback=token))
+        assert len(sends) == 1 and "Ação expirada" in client.messages[-1][0]
+
+
+def test_existing_state_gains_material_request_table(config, telegram):
+    with MonitorState(config, telegram.state_dir).open() as state:
+        state.db.execute("DROP TABLE material_requests")
+        state.db.execute("PRAGMA user_version=1")
+        state.db.commit()
+    with MonitorState(config, telegram.state_dir).open() as state:
+        state.db.execute("SELECT token FROM material_requests").fetchall()
