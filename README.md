@@ -204,7 +204,7 @@ Follow the [Telegram operations guide](docs/telegram.md) and
 ## Development status and verification
 
 The collector, assignment classifier, support cache, scheduled monitor and private
-bot are implemented. The reviewed offline suite contains **472 passing tests**:
+bot are implemented. The reviewed offline suite contains **481 passing tests**:
 
 ```sh
 .venv/bin/pytest -q

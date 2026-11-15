@@ -321,3 +321,27 @@ Failures now log only stage and category, with separate user messages for run-le
 contention and timeout initialization. Prior source navigation is preserved. The
 reported unrelated inconclusive activities do not invalidate a different confirmed
 pending activity's eligible cached material by themselves.
+
+## 16. Worker latency diagnostics for local testing
+
+The reported service was active but replies resumed only after roughly three
+minutes. The code imposed a default sixty-second retry delay on ordinary Telegram
+errors; this is a plausible latency contributor, not proof of the server's underlying
+network or API failure. Ordinary retries now back off for 2, 4, 8, and 16 seconds,
+while explicit Telegram retry delays and bounded worker termination remain intact.
+Polling and reply errors record only safe categories, HTTP status, stage, count,
+and delay. HTTP 409 explicitly suggests checking another worker or webhook.
+
+A local test with the same token requires stopping the previous host's worker so
+that two installations do not compete for updates.
+
+## 17. Authorized additional user as notification destination
+
+The reported configuration uses distinct primary and additional users, with the
+notification destination set to the additional user's private chat. That configuration
+is valid. The old authorization branch incorrectly denied the additional user whenever
+their chat equaled the notification destination. Authorization now accepts each listed
+user in their own private chat independently of the automatic notification destination.
+Replies are routed to the requester, with no notification fan-out or group access.
+A safe denial reason makes further silent rejection diagnosable. Prior consumed
+commands are not replayed; users should send a new command after reloading the worker.

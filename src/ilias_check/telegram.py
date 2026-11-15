@@ -16,10 +16,11 @@ from ilias_check.transport import _has_sensitive_url_material
 
 
 class TelegramError(RuntimeError):
-    def __init__(self, code="telegram_unavailable", retry_after=60, uncertain=False):
+    def __init__(self, code="telegram_unavailable", retry_after=1, uncertain=False, *, http_status=None):
         super().__init__(code)
         self.retry_after = min(max(int(retry_after), 1), 86400)
         self.uncertain = uncertain
+        self.http_status = http_status if type(http_status) is int and 100 <= http_status <= 599 else None
 
 
 def _user_ids(raw):
@@ -149,9 +150,10 @@ class TelegramClient:
             try:
                 result = response.json()
                 if response.status_code == 429 or result.get("error_code") == 429:
-                    raise TelegramError("telegram_rate_limited", result.get("parameters", {}).get("retry_after", 60))
+                    raise TelegramError("telegram_rate_limited", result.get("parameters", {}).get("retry_after", 60), http_status=429)
                 if response.status_code != 200 or not result.get("ok"):
-                    raise TelegramError("telegram_request_rejected", uncertain=response.status_code >= 500)
+                    code = "telegram_polling_conflict" if method == "getUpdates" and response.status_code == 409 else "telegram_request_rejected"
+                    raise TelegramError(code, uncertain=response.status_code >= 500, http_status=response.status_code)
                 return result["result"]
             finally:
                 response.close()

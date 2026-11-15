@@ -1307,3 +1307,122 @@ def test_busy_cache_does_not_start_unnecessary_source_refresh(config, telegram, 
         assert 'cache está sendo utilizado' in client.messages[-1][0]
         assert 'stage=cache category=runtime_busy' in caplog.text
         assert not client.documents and not state.cursor('support_check_at')
+
+
+def test_worker_network_failures_retry_quickly_and_resume_commands(config, telegram, caplog):
+    class Recovering(Client):
+        def __init__(self): super().__init__(); self.polls = 0
+        def updates(self, offset):
+            self.polls += 1
+            if self.polls <= 3: raise TelegramError(TOKEN + config.password, uncertain=True)
+            return [update('/ajuda')]
+    client = Recovering(); sleeps = []
+    run_bot(config, telegram, client, lambda: NOW, max_polls=4, sleeper=sleeps.append)
+    assert sleeps == [2, 4, 8] and sum(sleeps) == 14
+    assert len(client.messages) == 1 and client.messages[0][0].startswith('/pendentes —')
+    assert 'stage=poll failures=3 category=connection_or_delivery_error' in caplog.text
+    assert TOKEN not in caplog.text and config.password not in caplog.text
+
+
+def test_worker_still_honors_actual_telegram_rate_limit(config, telegram, caplog):
+    class Limited(Client):
+        def __init__(self): super().__init__(); self.polls = 0
+        def updates(self, offset):
+            self.polls += 1
+            if self.polls == 1:
+                raise TelegramError('telegram_rate_limited', retry_after=45, http_status=429)
+            return []
+    sleeps = []
+    run_bot(config, telegram, Limited(), lambda: NOW, max_polls=2, sleeper=sleeps.append)
+    assert sleeps == [45]
+    assert 'category=rate_limited http_status=429 delay_seconds=45' in caplog.text
+
+
+def test_worker_defers_long_requested_rate_limit_without_early_retry(config, telegram):
+    class Limited(Client):
+        def updates(self, offset):
+            raise TelegramError('telegram_rate_limited', retry_after=120, http_status=429)
+    sleeps = []
+    with pytest.raises(TelegramError) as error:
+        run_bot(config, telegram, Limited(), lambda: NOW, sleeper=sleeps.append)
+    assert str(error.value) == 'telegram_worker_deferred'
+    assert error.value.retry_after == 120 and error.value.http_status == 429 and not sleeps
+
+
+def test_polling_conflict_has_safe_status_and_actionable_worker_log(config, telegram, caplog):
+    class Response:
+        status_code = 409
+        def json(self): return {'ok': False, 'description': TOKEN + config.password}
+        def close(self): pass
+    class Session:
+        def post(self, *args, **kwargs): return Response()
+    with pytest.raises(TelegramError) as error:
+        TelegramClient(telegram, Session()).updates(0)
+    assert str(error.value) == 'telegram_polling_conflict' and error.value.http_status == 409
+    conflict = error.value
+    class Conflict(Client):
+        def updates(self, offset): raise conflict
+    run_bot(config, telegram, Conflict(), lambda: NOW, max_polls=1, sleeper=lambda seconds: None)
+    assert 'category=polling_conflict http_status=409' in caplog.text
+    assert 'including on other machines' in caplog.text
+    assert TOKEN not in caplog.text and config.password not in caplog.text
+
+
+def test_cli_reports_worker_api_failure_without_inventory_error(config, telegram, monkeypatch, capsys):
+    from ilias_check import cli
+    monkeypatch.setattr(cli.CollectorConfig, 'from_environment', lambda **kwargs: config)
+    monkeypatch.setattr(cli, 'load_environment', lambda *args: {})
+    monkeypatch.setattr(cli.TelegramConfig, 'from_mapping', lambda *args, **kwargs: telegram)
+    def failed(*args): raise TelegramError(TOKEN)
+    monkeypatch.setattr(cli, 'run_bot', failed)
+    assert cli.main(['bot']) == 1
+    output = capsys.readouterr()
+    assert 'Telegram worker stopped after an API failure' in output.err
+    assert 'inventory' not in output.err.lower() and TOKEN not in output.err
+
+
+def test_additional_authorized_user_can_use_own_chat_when_it_is_notification_destination(config, telegram):
+    telegram = replace(telegram, chat_id='300', allowed_user_ids=('300',))
+    with MonitorState(config, telegram.state_dir).open() as state:
+        state.observe(inventory(), NOW)
+        client = Client(); bot = Bot(config, telegram, state, client, lambda: NOW)
+        bot.handle(update('/start', user=300, chat=300))
+        assert len(client.messages) == 2
+        assert client.messages[1][0].startswith('Pendentes —')
+
+
+def test_primary_and_additional_users_route_replies_when_destination_is_additional_user(config, telegram):
+    class Response:
+        status_code = 200
+        def json(self): return {'ok': True, 'result': {'message_id': 1}}
+        def close(self): pass
+    class Session:
+        def __init__(self): self.payloads = []
+        def post(self, url, **options): self.payloads.append(options['json']); return Response()
+    configuration = replace(telegram, chat_id='300', allowed_user_ids=('300',))
+    session = Session(); client = TelegramClient(configuration, session)
+    with MonitorState(config, configuration.state_dir).open() as state:
+        state.observe(inventory(), NOW)
+        bot = Bot(config, configuration, state, client, lambda: NOW)
+        bot.handle(update('/start', user=300, chat=300))
+        assert len(session.payloads) == 2 and all(p['chat_id'] == '300' for p in session.payloads)
+        bot.handle(update('/ajuda', uid=2, user=200, chat=200))
+        assert session.payloads[-1]['chat_id'] == '200'
+        assert client.config.chat_id == '300'
+
+
+def test_allowlist_only_user_can_use_own_chat_as_notification_destination(config, telegram):
+    telegram = replace(telegram, chat_id='300', allowed_user_id='', allowed_user_ids=('300',))
+    with MonitorState(config, telegram.state_dir).open() as state:
+        client = Client(); bot = Bot(config, telegram, state, client, lambda: NOW)
+        bot.handle(update('/ajuda', user=300, chat=300))
+        assert len(client.messages) == 1
+
+
+def test_authorization_denial_reports_reason_without_private_fields(config, telegram, caplog):
+    with MonitorState(config, telegram.state_dir).open() as state:
+        client = Client(); bot = Bot(config, telegram, state, client, lambda: NOW)
+        bot.handle(update('/start ' + TOKEN + config.password, user=301, chat=301))
+        assert 'telegram_update_ignored reason=user_not_allowed' in caplog.text
+        assert TOKEN not in caplog.text and config.password not in caplog.text
+        assert not client.messages

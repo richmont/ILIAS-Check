@@ -101,18 +101,23 @@ class Bot:
         sender = callback.get("from", {}) if callback else message.get("from", {})
         return sender, message.get("chat", {})
 
-    def authorized(self, update):
+    def _authorization_denial(self, update):
         sender, chat = self._sender(update)
-        if sender.get("is_bot") or chat.get("type") != "private":
-            return False
+        if sender.get("is_bot"):
+            return "bot_sender"
+        if chat.get("type") != "private":
+            return "non_private_chat"
         user_id, chat_id = str(sender.get("id")), str(chat.get("id"))
         if user_id not in self.telegram.permitted_user_ids:
-            return False
-        # The configured chat belongs to the primary owner; additional users are
-        # accepted only in their own private chat, where chat ID equals user ID.
-        if chat_id == self.telegram.chat_id:
-            return user_id == self.telegram.allowed_user_id
-        return chat_id == user_id
+            return "user_not_allowed"
+        # The notification destination must not veto a listed user's own chat.
+        # Retain the explicitly configured primary pair for existing setups.
+        if chat_id == user_id or (chat_id == self.telegram.chat_id and user_id == self.telegram.allowed_user_id):
+            return None
+        return "private_chat_mismatch"
+
+    def authorized(self, update):
+        return self._authorization_denial(update) is None
 
     def handle(self, update):
         update_id = update.get("update_id")
@@ -121,7 +126,9 @@ class Bot:
             return
         # Claim before side effects: replay cannot repeat settings or a document send.
         self.state.set_cursor(cursor, update_id + 1)
-        if not self.authorized(update):
+        denial = self._authorization_denial(update)
+        if denial:
+            _LOG.warning("telegram_update_ignored reason=%s", denial)
             return
         uid = str(self._sender(update)[0].get("id"))
         now = self.clock()
@@ -605,6 +612,20 @@ class Bot:
             self.last_maintenance = now
 
 
+def _telegram_failure_category(error):
+    if error.http_status == 409:
+        return "polling_conflict"
+    if error.http_status == 429:
+        return "rate_limited"
+    if error.http_status == 401:
+        return "credentials_rejected"
+    if error.http_status == 403:
+        return "access_refused"
+    if error.http_status:
+        return "api_error"
+    return "connection_or_delivery_error"
+
+
 def run_bot(config, telegram, client=None, clock=None, max_polls=None, sleeper=time.sleep):
     owned = client is None
     client = client or TelegramClient(telegram)
@@ -618,25 +639,34 @@ def run_bot(config, telegram, client=None, clock=None, max_polls=None, sleeper=t
                 if callable(register):
                     try:
                         register(_COMMANDS)
-                    except TelegramError:
-                        pass
+                    except TelegramError as exc:
+                        _LOG.warning("telegram_worker_menu_failed category=%s http_status=%s",
+                                     _telegram_failure_category(exc), exc.http_status)
                 cursor = "updates:" + hashlib.sha256(telegram.token.encode()).hexdigest()
                 failures = 0
                 polls = 0
                 while max_polls is None or polls < max_polls:
                     bot.maintenance_tick()
                     try:
+                        stage = "poll"
                         updates = client.updates(state.cursor(cursor))
+                        stage = "handle_update"
                         for update in updates[:25]:
                             bot.handle(update)
                         failures = 0
                     except TelegramError as exc:
                         failures += 1
+                        delay = min(max(2 ** failures, exc.retry_after), 60)
+                        _LOG.warning("telegram_worker_retry stage=%s failures=%d category=%s http_status=%s delay_seconds=%d",
+                                     stage, failures, _telegram_failure_category(exc), exc.http_status,
+                                     max(delay, exc.retry_after))
+                        if exc.http_status == 409:
+                            _LOG.warning("telegram_worker_polling_conflict: stop other workers using this bot, including on other machines, and check for an active webhook")
                         if failures >= 5:
-                            raise TelegramError("telegram_worker_retries_exhausted") from None
+                            raise TelegramError("telegram_worker_retries_exhausted", http_status=exc.http_status) from None
                         if exc.retry_after > 60:
-                            raise TelegramError("telegram_worker_deferred", exc.retry_after) from None
-                        sleeper(min(max(2 ** failures, exc.retry_after), 60))
+                            raise TelegramError("telegram_worker_deferred", exc.retry_after, http_status=exc.http_status) from None
+                        sleeper(delay)
                     polls += 1
     finally:
         if owned:

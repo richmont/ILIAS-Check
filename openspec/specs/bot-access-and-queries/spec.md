@@ -7,7 +7,7 @@ Let the configured learner inspect activity states and obtain support in a priva
 ## Requirements
 
 ### Requirement: Authorize every interaction
-Every command, callback, and download SHALL require an explicitly authorized user in a permitted private chat. The primary destination SHALL accept only its configured owner; additional users SHALL be accepted only in their own private chats. Unauthorized chats/users SHALL receive no account data. Callback identifiers alone SHALL NOT authorize access.
+Every command, callback, and download SHALL require an explicitly authorized user in a permitted private chat. Listed users SHALL be accepted in their own private chats regardless of which listed user receives automatic notifications. The notification destination SHALL NOT veto a permitted user's own chat. Unauthorized chats/users SHALL receive no account data. Callback identifiers alone SHALL NOT authorize access.
 
 #### Scenario: Forwarded material button
 - **WHEN** an unauthorized user presses a forwarded button or sends a known document identifier
@@ -198,3 +198,29 @@ Material-request failures SHALL log a bounded stage and error category without e
 #### Scenario: Cache lease is busy
 - **WHEN** a requested local copy cannot be opened because another operation holds the cache lease
 - **THEN** the bot reports cache contention with source navigation instead of treating it as an absent copy and starting a needless source scan
+
+### Requirement: Prompt bounded worker recovery diagnostics
+Ordinary Telegram polling or reply failures SHALL use bounded exponential retry delays starting at two seconds, rather than a default sixty-second pause. Explicit Telegram retry delays SHALL still be considered. Five consecutive failures SHALL retain the existing termination behavior, and a successful poll SHALL reset the counter. Logs SHALL identify the stage, failure count, safe category, HTTP status, and planned delay without response contents or credentials.
+
+#### Scenario: Three ordinary connection failures
+- **WHEN** three polls fail and the fourth succeeds with a command
+- **THEN** the default sleeps are two, four, and eight seconds and the command is processed after recovery
+
+#### Scenario: Polling conflict across installations
+- **WHEN** Telegram returns HTTP 409 during polling
+- **THEN** a safe diagnostic identifies the conflict and advises checking other workers, including other hosts, or a webhook without exposing the token or response description
+
+#### Scenario: Worker API failure exit
+- **WHEN** repeated API failures exhaust worker retries
+- **THEN** the CLI reports a Telegram worker failure separately from inventory collection errors
+
+### Requirement: Independent notification destination and user authorization
+`TELEGRAM_CHAT_ID` SHALL select the automatic notification destination without requiring that its user be the primary `TELEGRAM_ALLOWED_USER_ID`. A listed additional user whose private chat is the configured destination SHALL retain normal command and download access. Replies SHALL still go to the requesting user's private chat. Rejected updates SHALL log only a safe reason without content or credentials.
+
+#### Scenario: Additional user is the notification recipient
+- **WHEN** the primary owner and an additional allowed user differ, and the configured notification chat belongs to the additional user
+- **THEN** both users can invoke commands in their own private chats and the additional user also remains the notification recipient
+
+#### Scenario: Only an allowlist is configured
+- **WHEN** the primary owner field is empty and the configured destination belongs to a user listed in `TELEGRAM_ALLOWED_USER_IDS`
+- **THEN** that user can query the bot in their private chat

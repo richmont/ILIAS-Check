@@ -9,7 +9,7 @@ import sys
 
 from ilias_check.collector import collect_inventory
 from ilias_check.cache_config import CacheError
-from ilias_check.telegram import TelegramConfig
+from ilias_check.telegram import TelegramConfig, TelegramError
 from ilias_check.monitor import run_monitor
 from ilias_check.bot import run_bot
 from ilias_check.config import CollectorConfig, ConfigurationError, load_environment
@@ -97,6 +97,9 @@ def main(argv: list[str] | None = None) -> int:
         inventory = select_activities(inventory, args.select)
     except KeyboardInterrupt:
         return 130
+    except TelegramError:
+        print("Telegram worker stopped after an API failure; check worker diagnostics.", file=sys.stderr)
+        return 1
     except CacheError as exc:
         print(f"Runtime state error: {exc}", file=sys.stderr)
         return 3 if "Another process" in str(exc) else 1

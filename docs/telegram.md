@@ -123,8 +123,10 @@ private chat, including forwarded buttons. `TELEGRAM_ALLOWED_USER_ID` identifies
 primary owner. Optional `TELEGRAM_ALLOWED_USER_IDS=300,400` grants additional users
 access to the same configured ILIAS account in their own private chats. Replies go
 to the requesting user's chat; monitor notifications keep the configured destination
-and are not broadcast to the allowlist. Request limits, report drafts, and transient
-navigation tokens are isolated per user.
+and are not broadcast to the allowlist. The destination may belong to an additional
+listed user; it does not have to match the primary owner. Request limits, report
+drafts, and transient navigation tokens are isolated per user. Rejected updates log
+`telegram_update_ignored reason=...` without their text or credentials.
 
 A token/destination worker lock prevents duplicate pollers using the same state
 store. Update cursors persist before side effects; replay cannot repeat a setting
@@ -242,3 +244,25 @@ chat. **No issue is opened, and no maintainer/teacher/admin receives the report.
 Restart/timeout discards drafts; scheduled notifications remain independent.
 
 Deployment status and remaining authorization-dependent steps: [operational checklist](deployment-checklist.md).
+
+## Worker delays and local installation diagnostics
+
+An active systemd process does not prove that Telegram polling is succeeding.
+Ordinary connection/API failures use a short bounded retry sequence (2, 4, 8, and
+16 seconds); a Telegram-provided `retry_after` can require a longer delay. Five
+consecutive failures still terminate with an explicit worker error; delays over
+60 seconds are reported as deferred rather than blocking the worker in a long sleep.
+A successful poll resets the failure count.
+
+Worker failures log `telegram_worker_retry stage=... failures=... category=...
+http_status=... delay_seconds=...` without response descriptions, exception text,
+credentials, or message bodies. HTTP 409 is identified as a polling conflict;
+HTTP 429 identifies a rate limit, 401 a credential rejection, and 403 access refusal.
+The CLI identifies worker API shutdown separately from inventory failures.
+
+Before running a local installation with the same token, stop its worker on the
+previous host and stop any manual copy. Local filesystem locks cannot prevent a
+second machine from polling the same bot. A 409 diagnostic calls out other workers
+or an active webhook; multiple authorized Telegram users do not require multiple
+worker processes. For local uncommitted testing, install from the current workspace
+checkout so that the local worker includes the changes without publishing them.
