@@ -307,3 +307,17 @@ Telegram documents preserve the ILIAS response filename when known, or use the
 original material title for older cache entries, sanitized to a bounded basename
 with the validated media type's extension. Internal blob names remain private.
 These changes were checked offline with synthetic files and transports.
+
+## 15. Cached downloads while the monitor is scanning
+
+A valid local material request must not require the monitor's traversal lease.
+That lease can be held for a long source scan even while usable bytes are already
+cached. Local delivery keeps the cache lease and rechecks the latest stored activity
+before upload; newer submissions or other changes prevent using the old decision.
+A cache miss still requires the source run lease and reports explicit contention
+instead of starting a duplicate scan or giving a generic eligibility failure.
+
+Failures now log only stage and category, with separate user messages for run-lease
+contention and timeout initialization. Prior source navigation is preserved. The
+reported unrelated inconclusive activities do not invalidate a different confirmed
+pending activity's eligible cached material by themselves.

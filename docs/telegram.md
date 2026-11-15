@@ -200,6 +200,18 @@ The labels inspect the current private manifest and bytes without ILIAS requests
 a locked store stays unverified. Old metadata-only flags do not hide a later manual
 download. Delivery checks are repeated at click time.
 
+Eligible cached sends do not acquire the monitor's long-running scan lock. They
+hold the cache lease during upload and recheck that the stored activity has not
+changed before sending. Source refreshes still require the account run lock; if
+it is busy, the bot explains that a monitor check is ongoing and offers the source.
+Partial coverage in unrelated activities does not by itself make a confirmed
+pending activity's valid support copy ineligible.
+
+Material failures record `material_request_failed stage=... category=...` on
+stderr/journal without exception contents or course data. For a failed click,
+inspect the service log with `journalctl --user -u ilias-check-bot.service -n 50 --no-pager`. A deadline-initialization problem and an active scan receive distinct
+chat responses rather than the same generic eligibility message.
+
 When that gate cannot admit a local copy, the bot announces the bounded ILIAS check
 before collection. The entire interactive request has a **120-second elapsed-time
 limit**, covering local lookup, traversal, retrieval and upload. Timeout interrupts

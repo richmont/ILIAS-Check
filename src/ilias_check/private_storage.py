@@ -12,6 +12,10 @@ from urllib.parse import urlsplit, urlunsplit
 from ilias_check.cache_config import CacheError
 
 
+class RuntimeStoreBusy(CacheError):
+    """A nonblocking runtime lease is currently held by another operation."""
+
+
 def account_key(config) -> str:
     parsed = urlsplit(config.base_url)
     host = parsed.hostname.lower()
@@ -65,7 +69,7 @@ def process_lock(root_fd: int, name: str = "cache.lock"):
         try:
             fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
-            raise CacheError("Another process is using this private runtime store.") from None
+            raise RuntimeStoreBusy("Another process is using this private runtime store.") from None
         yield
     finally:
         os.close(fd)

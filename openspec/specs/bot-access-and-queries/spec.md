@@ -172,3 +172,29 @@ Telegram document uploads SHALL use the validated ILIAS response filename when k
 #### Scenario: Existing cache with original title
 - **WHEN** an older cache entry has no stored filename but its selected material has an original document title
 - **THEN** Telegram uses that name instead of always naming the file `material.docx`
+
+### Requirement: Independent cached delivery during monitoring
+A valid requested cache copy SHALL NOT require the monitor's long-running traversal lease. It SHALL retain the cache file lease throughout upload and recheck the latest stored activity identity immediately before sending. A cache miss requiring source access SHALL still acquire the account run lease; contention SHALL report an ongoing check with source navigation instead of a generic eligibility failure.
+
+#### Scenario: Monitor is scanning and valid bytes exist
+- **WHEN** the monitor holds its traversal lease and an authorized user requests an eligible cached copy
+- **THEN** the bot sends that copy using the cache lease without starting another source scan
+
+#### Scenario: Newer submission while opening the cache
+- **WHEN** the stored activity changes to submitted between the click and the final local delivery check
+- **THEN** the previously selected cached bytes are not uploaded
+
+### Requirement: Safe stage-specific material diagnostics
+Material-request failures SHALL log a bounded stage and error category without exception contents, source text, credentials, or token-bearing URLs. Runtime lease contention and deadline setup failure SHALL produce distinct actionable chat responses. Source navigation SHALL remain available from the previous observation when a request fails before refresh.
+
+#### Scenario: Another scan and no eligible local copy
+- **WHEN** source refresh cannot acquire the monitor's run lease
+- **THEN** the user is told that a monitor check is in progress, receives the source link, and no second source scan starts
+
+#### Scenario: Deadline setup failure
+- **WHEN** the request cannot initialize its timeout guard
+- **THEN** the bot reports that setup problem and logs its stage and error class without printing the exception message
+
+#### Scenario: Cache lease is busy
+- **WHEN** a requested local copy cannot be opened because another operation holds the cache lease
+- **THEN** the bot reports cache contention with source navigation instead of treating it as an absent copy and starting a needless source scan

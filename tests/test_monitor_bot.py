@@ -1221,3 +1221,89 @@ def test_document_upload_uses_safe_original_filename(telegram, entry_name, title
              'downloaded_at': stamp(NOW), 'last_validated_at': stamp(NOW), 'associations': {}}
     files = RecordingClient(telegram).document(None, entry, activity, stamp(NOW))
     assert files['document'][0] == expected
+
+
+def test_current_cached_copy_can_be_sent_while_monitor_holds_scan_lock(config, telegram, cached_material):
+    data, _ = cached_material
+    def unexpected(*args): pytest.fail('Available cache must not require another source scan')
+    with MonitorState(config, telegram.state_dir).open() as state:
+        state.observe(data, NOW)
+        client = Client(); bot = Bot(config, telegram, state, client, lambda: NOW, unexpected, unexpected)
+        bot.handle(update('/materiais'))
+        token = client.messages[-1][1][0][0]['callback_data']
+        with state.run_lock():
+            bot.handle(update(uid=2, callback=token))
+        assert len(client.documents) == 1
+
+
+def test_cache_miss_during_monitor_scan_explains_busy_without_collecting(config, telegram, caplog):
+    data = inventory()
+    data['activities'][0]['support_documents'] = [
+        {'document_id': 'file:9', 'title': 'worksheet.pdf', 'selected_for_support': True, 'role': 'support', 'state': 'metadata_only'}]
+    def unexpected(*args): pytest.fail('Do not start a second scan while the monitor holds the lease')
+    with MonitorState(config, telegram.state_dir).open() as state:
+        state.observe(data, NOW)
+        client = Client(); bot = Bot(config, telegram, state, client, lambda: NOW, unexpected, unexpected)
+        bot.handle(update('/materiais'))
+        token = client.messages[-1][1][0][0]['callback_data']
+        with state.run_lock(): bot.handle(update(uid=2, callback=token))
+        assert 'monitor está em andamento' in client.messages[-1][0]
+        assert client.messages[-1][1][0][0]['text'] == 'Abrir no ILIAS'
+        assert 'stage=source_lock category=runtime_busy' in caplog.text
+        assert not state.cursor('support_check_at') and not client.documents
+
+
+def test_cached_copy_rechecks_newer_submission_before_upload(config, telegram, cached_material, monkeypatch):
+    from contextlib import contextmanager
+    from ilias_check.support_cache import SupportCache
+    data, _ = cached_material
+    original = SupportCache.delivery
+    with MonitorState(config, telegram.state_dir).open() as state:
+        state.observe(data, NOW)
+        @contextmanager
+        def changed_during_open(cache, *args, **kwargs):
+            with original(cache, *args, **kwargs) as item:
+                state.observe(inventory('submitted'), NOW)
+                yield item
+        monkeypatch.setattr(SupportCache, 'delivery', changed_during_open)
+        client = Client(); bot = Bot(config, telegram, state, client, lambda: NOW, lambda c: inventory('submitted'))
+        bot.handle(update('/materiais'))
+        bot.handle(update(uid=2, callback=client.messages[-1][1][0][0]['callback_data']))
+        assert not client.documents and 'Não foi possível confirmar' in client.messages[-1][0]
+
+
+def test_material_deadline_setup_failure_is_visible_and_logged_without_secrets(config, telegram, cached_material, monkeypatch, caplog):
+    from contextlib import contextmanager
+    from ilias_check import bot as bot_module
+    data, _ = cached_material
+    @contextmanager
+    def failed_deadline():
+        raise CacheError(TOKEN + config.password)
+        yield
+    monkeypatch.setattr(bot_module, 'material_request_deadline', failed_deadline)
+    with MonitorState(config, telegram.state_dir).open() as state:
+        state.observe(data, NOW)
+        client = Client(); bot = Bot(config, telegram, state, client, lambda: NOW)
+        bot.handle(update('/materiais'))
+        bot.handle(update(uid=2, callback=client.messages[-1][1][0][0]['callback_data']))
+        assert 'iniciar o limite de tempo' in client.messages[-1][0]
+        assert client.messages[-1][1][0][0]['text'] == 'Abrir no ILIAS'
+        assert 'stage=deadline category=CacheError' in caplog.text
+        assert TOKEN not in caplog.text and config.password not in caplog.text
+        assert not client.documents
+
+
+def test_busy_cache_does_not_start_unnecessary_source_refresh(config, telegram, cached_material, caplog):
+    from ilias_check.support_cache import SupportCache
+    data, _ = cached_material
+    def unexpected(*args): pytest.fail('A busy cache is not a cache miss and must not start a source scan')
+    with MonitorState(config, telegram.state_dir).open() as state:
+        state.observe(data, NOW)
+        client = Client(); bot = Bot(config, telegram, state, client, lambda: NOW, unexpected, unexpected)
+        bot.handle(update('/materiais'))
+        token = client.messages[-1][1][0][0]['callback_data']
+        with SupportCache(config, lambda: NOW).locked():
+            bot.handle(update(uid=2, callback=token))
+        assert 'cache está sendo utilizado' in client.messages[-1][0]
+        assert 'stage=cache category=runtime_busy' in caplog.text
+        assert not client.documents and not state.cursor('support_check_at')

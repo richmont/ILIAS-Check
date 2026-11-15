@@ -7,6 +7,7 @@ from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 import hashlib
 import json
+import logging
 import secrets
 import time
 
@@ -15,7 +16,7 @@ from ilias_check.cache_config import CacheError
 from ilias_check.collector import collect_inventory
 from ilias_check.monitor import effective_config, maintain
 from ilias_check.monitor_state import MonitorState
-from ilias_check.private_storage import process_lock
+from ilias_check.private_storage import RuntimeStoreBusy, process_lock
 from ilias_check.support_cache import (
     INTERACTIVE_ACTIVITY_MAX_AGE, SupportCache, association_id, cache_inventory, instant, stamp,
 )
@@ -25,6 +26,8 @@ from ilias_check.telegram import (
 )
 from ilias_check.transport import SafeTransport
 from ilias_check.timeouts import MaterialRequestTimeout, material_request_deadline
+
+_LOG = logging.getLogger(__name__)
 
 _ISSUES = "https://github.com/richmont/ILIAS-Check/issues/new"
 _HELP = ("/pendentes — uploads pendentes\n/entregues — histórico de entregas\n/encerradas — encerradas sem entrega\n"
@@ -449,42 +452,60 @@ class Bot:
             return
         aid, document_id = payload
         activity = None
+        stage = "prepare"
         try:
-            with self.state.run_lock(), material_request_deadline():
+            previous = self.state.db.execute("SELECT * FROM observations WHERE id=?", (aid,)).fetchone()
+            activity = json.loads(previous["activity"]) if previous else None
+            self.client.message("Verificando o cache local para enviar o documento…")
+            stage = "deadline"
+            with material_request_deadline():
+                stage = "configuration"
                 config = effective_config(self.config, self.state)
-                previous = self.state.db.execute("SELECT * FROM observations WHERE id=?", (aid,)).fetchone()
-                activity = json.loads(previous["activity"]) if previous else None
-                self.client.message("Verificando o cache local para enviar o documento…")
-                # Cache hits need no collector/login and do not consume the source
-                # refresh throttle. Only the latest current observation can permit one.
+                stage = "cache"
+                # Local delivery uses the cache lease, not the monitor's long
+                # traversal lease. A running source scan cannot block valid bytes.
                 if previous and previous["current"] and self._send_cached(
                         config, document_id, activity, previous["checked_at"]):
                     return
-                now = self.clock()
-                last_check = self.state.cursor("support_check_at")
-                if last_check and now.timestamp() - last_check < 300:
-                    self.client.message("Nenhuma cópia local elegível está pronta. Uma verificação de materiais já foi feita recentemente; aguarde cinco minutos e abra o material novamente.", source_buttons(activity) if activity else [])
-                    return
-                self.last_check = now
-                self.state.set_cursor("support_check_at", int(now.timestamp()))
-                self.client.message("Não há cópia local pronta para envio. Vou verificar a atividade e o material no ILIAS; o limite desta solicitação é de dois minutos.")
-                # The scan observes metadata only; consent covers only the selected material.
-                inventory = self.collector(replace(config, cache_policy=replace(config.cache_policy, enabled=False)))
-                self.state.observe(inventory, self.clock(), self.telegram.reminder_hours, self.telegram.send_documents)
-                refreshed = next((a for a in inventory["activities"] if association_id(a) == aid), None)
-                material = next((m for m in refreshed.get("support_documents", []) if m["document_id"] == document_id and m["selected_for_support"] and m["role"] == "support"), None) if refreshed else None
-                if not refreshed or refreshed["status"] != "pending" or not material:
-                    raise CacheError("Eligibility not confirmed.")
-                activity = refreshed
-                self.retrieve(config, inventory, activity, material)
+                stage = "source_lock"
+                with self.state.run_lock():
+                    stage = "source_refresh"
+                    now = self.clock()
+                    last_check = self.state.cursor("support_check_at")
+                    if last_check and now.timestamp() - last_check < 300:
+                        self.client.message("Nenhuma cópia local elegível está pronta. Uma verificação de materiais já foi feita recentemente; aguarde cinco minutos e abra o material novamente.", source_buttons(activity) if activity else [])
+                        return
+                    self.last_check = now
+                    self.state.set_cursor("support_check_at", int(now.timestamp()))
+                    self.client.message("Não há cópia local pronta para envio. Vou verificar a atividade e o material no ILIAS; o limite desta solicitação é de dois minutos.")
+                    # The scan observes metadata only; consent covers only the selected material.
+                    inventory = self.collector(replace(config, cache_policy=replace(config.cache_policy, enabled=False)))
+                    self.state.observe(inventory, self.clock(), self.telegram.reminder_hours, self.telegram.send_documents)
+                    refreshed = next((a for a in inventory["activities"] if association_id(a) == aid), None)
+                    material = next((m for m in refreshed.get("support_documents", []) if m["document_id"] == document_id and m["selected_for_support"] and m["role"] == "support"), None) if refreshed else None
+                    if not refreshed or refreshed["status"] != "pending" or not material:
+                        raise CacheError("Eligibility not confirmed.")
+                    activity = refreshed
+                    stage = "retrieve"
+                    self.retrieve(config, inventory, activity, material)
         except MaterialRequestTimeout:
+            _LOG.warning("material_request_failed stage=%s category=timeout", stage)
             self.client.message("A solicitação atingiu o limite de dois minutos e foi interrompida. Nenhum envio foi confirmado. Consulte o material no ILIAS ou abra o menu novamente após atualizar o monitor.", source_buttons(activity) if activity else [])
+        except RuntimeStoreBusy:
+            _LOG.warning("material_request_failed stage=%s category=runtime_busy", stage)
+            text = ("O cache está sendo utilizado por outra operação. Aguarde a conclusão e abra o material novamente, ou consulte o ILIAS." if stage == "cache" else
+                    "Uma verificação do monitor está em andamento e a cópia local ainda não pôde ser enviada. Aguarde a conclusão e abra o material novamente, ou consulte o ILIAS.")
+            self.client.message(text, source_buttons(activity) if activity else [])
         except TelegramError as exc:
+            _LOG.warning("material_request_failed stage=%s category=telegram", stage)
             text = ("O arquivo excede o limite de envio pelo Telegram." if str(exc) == "telegram_document_too_large" else
                     "Não foi possível confirmar o envio pelo Telegram. Abra o material novamente para tentar; o ILIAS continua sendo a fonte oficial.")
             self.client.message(text, source_buttons(activity) if activity else [])
-        except Exception:
-            self.client.message("Não foi possível confirmar uma cópia elegível agora. Consulte o ILIAS e /verificar; nenhum estado da atividade foi alterado.", source_buttons(activity) if activity else [])
+        except Exception as exc:
+            _LOG.warning("material_request_failed stage=%s category=%s", stage, type(exc).__name__)
+            text = ("Não foi possível iniciar o limite de tempo desta solicitação. Reinicie o worker e tente novamente." if stage == "deadline" else
+                    "Não foi possível confirmar uma cópia elegível agora. Consulte o ILIAS e /verificar; nenhum estado da atividade foi alterado.")
+            self.client.message(text, source_buttons(activity) if activity else [])
 
     def _send_cached(self, config, document_id, activity, checked_at):
         if not config.cache_policy.directory.expanduser().exists():
@@ -496,7 +517,15 @@ class Bot:
                 source, entry = stack.enter_context(
                     SupportCache(config, self.clock).delivery(
                         document_id, activity, checked_at, activity_max_age=INTERACTIVE_ACTIVITY_MAX_AGE))
+            except RuntimeStoreBusy:
+                raise
             except (CacheError, OSError, ValueError):
+                return False
+            # Collection may commit a newer observation after the click. Recheck
+            # its identity while the cache lease protects the selected bytes.
+            latest = self.state.db.execute("SELECT * FROM observations WHERE id=?", (association_id(activity),)).fetchone()
+            if (not latest or not latest["current"] or latest["checked_at"] != checked_at
+                    or json.loads(latest["activity"]) != activity):
                 return False
             self.client.document(source, entry, activity, checked_at, self._timezone())
         return True
