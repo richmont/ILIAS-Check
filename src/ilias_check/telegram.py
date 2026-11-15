@@ -1,7 +1,7 @@
 """Isolated outbound/inbound Bot API client. No ILIAS session or file-ID bypass."""
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 import json
 from pathlib import Path
@@ -146,6 +146,10 @@ class TelegramClient:
         except Exception:
             raise TelegramError("telegram_delivery_uncertain", uncertain=True) from None
 
+    def for_chat(self, chat_id):
+        """Route an already-authorized interaction without changing monitor delivery."""
+        return TelegramClient(replace(self.config, chat_id=str(chat_id)), self.session)
+
     def message(self, text, buttons=None):
         # Plain text: source markup is never parsed as Telegram HTML/Markdown.
         text = redact(text, (self.config.token,))
@@ -155,13 +159,13 @@ class TelegramClient:
             payload["reply_markup"] = {"inline_keyboard": buttons}
         return self.call("sendMessage", payload)
 
-    def document(self, source, entry, activity, checked_at):
+    def document(self, source, entry, activity, checked_at, timezone_name=None):
         if entry["byte_size"] > self.config.max_document_bytes:
             raise TelegramError("telegram_document_too_large")
         link = activity.get("url") if safe_link(activity.get("url")) else "Abra o ILIAS."
         association = entry["associations"].get(activity["exercise_id"] + ":" + str(activity["assignment_id"]), {})
-        caption = (f"Cópia de apoio — {activity['title'][:180]}\nBaixada: {format_time(entry['downloaded_at'])}\n"
-                   f"Validada: {format_time(entry['last_validated_at'])}\nExpira: {format_time(association.get('expires_at'))}\n"
+        caption = (f"Cópia de apoio — {activity['title'][:180]}\nBaixada: {format_time(entry['downloaded_at'], timezone_name)}\n"
+                   f"Validada: {format_time(entry['last_validated_at'], timezone_name)}\nExpira: {format_time(association.get('expires_at'), timezone_name)}\n"
                    f"ILIAS é a fonte oficial e pode estar mais atualizado. Cópias já enviadas não podem ser revogadas.\n{link}")
         return self.call("sendDocument", {"chat_id": self.config.chat_id, "caption": caption[:1024]},
                          files={"document": ("material" + _extension(entry["media_type"]), source, entry["media_type"])})
@@ -213,7 +217,7 @@ def activity_message(activity, checked_at, incomplete=False, stale=False, timezo
         lines.append("Use /relatar para explicar como espera que o bot exiba esta atividade. Seu feedback não altera o estado da tarefa.")
     for history in activity.get("submission_history", [])[:3]:
         scope = {"team": "equipe", "personal": "pessoal"}.get(history.get("scope"), "não confirmado")
-        lines.append(f"Entrega {scope}: {history.get('submitted_at') or 'data não confirmada'}; anexo: {_known(history.get('attachment_present'))}; aprovação: {_known(history.get('approved'))}; conclusão: {_known(history.get('completed'))}.")
+        lines.append(f"Entrega {scope}: {format_time(history['submitted_at'], timezone_name) if history.get('submitted_at') else 'data não confirmada'}; anexo: {_known(history.get('attachment_present'))}; aprovação: {_known(history.get('approved'))}; conclusão: {_known(history.get('completed'))}.")
     docs = activity.get("support_documents", [])
     if docs:
         states = {"cached": "cópia disponível", "unchanged": "cópia validada", "metadata_only": "somente referência",

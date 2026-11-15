@@ -77,3 +77,21 @@ The monitor SHALL provide a dry-run mode that reports planned notifications with
 #### Scenario: Dry run
 - **WHEN** the user requests dry-run monitoring
 - **THEN** planned events are shown locally and no Telegram request or delivery acknowledgment occurs
+
+### Requirement: Grouped message acknowledgments
+A successful summary SHALL acknowledge every represented due message component with the returned message identity. Failed or ambiguous sends SHALL preserve bounded retries without acknowledging success. Attachment acknowledgments SHALL remain independent. Obsolete or stale evidence SHALL be reconciled immediately before each external side effect. `sent_components` SHALL count acknowledged components rather than Telegram API sends.
+
+#### Scenario: Failed summary with several pending events
+- **WHEN** the single summary send for multiple due events times out
+- **THEN** every included message component records uncertain delivery, no activity is marked notified, and a later eligible retry sends one summary
+
+#### Scenario: Slow summary before attachments
+- **WHEN** the summary succeeds but its send takes long enough to expire relevant evidence
+- **THEN** its confirmed message components stay acknowledged while subsequent attachment components pause until a fresh check
+
+### Requirement: Durable material-button migration
+The private monitoring database SHALL migrate schema version one to version two transactionally to store material-request tokens without passwords or bot credentials. Newer unsupported schema versions SHALL be rejected. Tokens SHALL be bounded by their expiry during maintenance on creation and validated at claim time.
+
+#### Scenario: Existing monitoring installation
+- **WHEN** the updated worker opens a version-one state database
+- **THEN** observations and notification history remain intact and durable single-use material requests become available

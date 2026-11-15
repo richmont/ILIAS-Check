@@ -74,3 +74,10 @@ The collector SHALL export schema version, UTC check time, root scope, object id
 #### Scenario: Confirmed empty root
 - **WHEN** a supported root is successfully parsed and contains no objects
 - **THEN** the JSON distinguishes its complete empty inventory from an inaccessible or unsupported root
+
+### Requirement: Optional extraction progress
+`collect` and `monitor` SHALL support opt-in `--progress` diagnostics on stderr. Progress SHALL report root position, request count, discovered object count, elapsed time, and completion without credentials, session material, or course content. JSON stdout SHALL remain independently parseable. Progress SHALL NOT imply a separate login per request or bypass traversal limits.
+
+#### Scenario: Long monitoring scan
+- **WHEN** a user runs `monitor --progress` against several configured roots
+- **THEN** stderr reports bounded scan progress and stdout remains the monitor's JSON result

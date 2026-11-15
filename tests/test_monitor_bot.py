@@ -229,10 +229,15 @@ def test_original_source_unknown_feedback_and_honest_history(config, telegram):
         client = Client(); bot = Bot(config, telegram, state, client, lambda: NOW)
         bot.handle(update("/verificar"))
         text = "\n".join(t for t, _ in client.messages)
+        assert "Inconclusivo" not in text and "Übung <b>Original</b>" in text and "precisa verificar" in text
+        bot.handle(update("/verificar 1", uid=2))
+        detail = client.messages[-1][1][-1][0]["callback_data"]
+        bot.handle(update(uid=3, callback=detail))
+        text = "\n".join(t for t, _ in client.messages)
         assert "Inconclusivo — precisa verificar" in text and "Übung <b>Original</b>" in text
         assert "Bitte laden Sie Ihre Datei hoch." in text and "/relatar" in text and "feedback não altera" in text
         assert client.messages[-1][1][0][0]["text"] == "Abrir no ILIAS"
-        bot.handle(update("/pendentes", uid=2))
+        bot.handle(update("/pendentes", uid=4))
         assert "não confirma" in client.messages[-1][0]
 
 
@@ -242,12 +247,12 @@ def test_views_name_the_category_and_verify_explains_coverage(config, telegram):
         client = Client(); bot = Bot(config, telegram, state, client, lambda: NOW)
         bot.handle(update("/verificar"))
         header = client.messages[0][0]
-        assert header.startswith("Inconclusivas — observação de")
+        assert header.startswith("Inconclusivas — 1 atividade; observação de")
         assert "Cobertura incompleta" in header and "root(s) 1" in header
         assert "consulte /verificar" not in header
         bot.handle(update("/pendentes", uid=2))
         pending = client.messages[-1][0]
-        assert pending.startswith("Pendentes — observação de")
+        assert pending.startswith("Pendentes — 0 atividades; observação de")
         assert "detalhes em /verificar" in pending
 
 
@@ -269,8 +274,10 @@ def test_history_retained_after_reopen_and_missing_observation_marked_old(config
         state.observe(inventory(), NOW)
         client = Client(); bot = Bot(config, telegram, state, client, lambda: NOW)
         bot.handle(update("/entregues"))
-        assert any("aprovação não presumida" in text for text, _ in client.messages)
-        assert any("antiga" in text for text, _ in client.messages)
+        assert any("observação antiga" in text for text, _ in client.messages)
+        token = client.messages[-1][1][-1][0]["callback_data"]
+        bot.handle(update(uid=2, callback=token))
+        assert "aprovação não presumida" in client.messages[-1][0]
 
 
 def test_pagination_rate_limit_received_files_never_fetched(config, telegram):
@@ -280,14 +287,38 @@ def test_pagination_rate_limit_received_files_never_fetched(config, telegram):
         state.observe(data, NOW)
         client = Client(); bot = Bot(config, telegram, state, client, lambda: NOW)
         bot.handle(update("/pendentes"))
-        assert len(client.messages) == 6 and "Próxima página" in client.messages[-1][0]
-        bot.handle(update(None, uid=2))
+        assert len(client.messages) == 1
+        header, buttons = client.messages[0]
+        assert "10 atividades" in header and "página 1/2" in header
+        assert "5. Übung" in header and "6. Übung" not in header
+        assert [button["text"] for button in buttons[0]] == ["Próxima ▶"]
+        assert buttons[1][0]["text"] == "Exibir todas (10)"
+        assert [button["text"] for button in buttons[2]] == ["1", "2", "3", "4", "5"]
+        bot.handle(update(uid=2, callback=buttons[0][0]["callback_data"]))
+        assert "página 2/2" in client.messages[-1][0] and "10. Übung" in client.messages[-1][0]
+        bot.handle(update(None, uid=3))
         assert "não baixo anexos" in client.messages[-1][0]
-        for i in range(3, 40):
+        for i in range(4, 41):
             bot.handle(update("/ajuda", uid=i))
         count = len(client.messages)
         bot.handle(update("/pendentes", uid=100))
         assert len(client.messages) == count and not client.documents
+
+
+def test_show_all_requires_an_explicit_click(config, telegram):
+    with MonitorState(config, telegram.state_dir).open() as state:
+        data = inventory()
+        data["activities"] = [inventory(ass=str(i))["activities"][0] for i in range(1, 8)]
+        state.observe(data, NOW)
+        client = Client(); bot = Bot(config, telegram, state, client, lambda: NOW)
+        bot.handle(update("/pendentes"))
+        assert len(client.messages) == 1
+        token = client.messages[0][1][1][0]["callback_data"]
+        bot.handle(update(uid=2, callback=token))
+        assert len(client.messages) == 9
+        assert client.messages[1][0].startswith("Pendentes — todas as 7 atividades")
+        assert all("Observado em:" in text for text, _ in client.messages[2:])
+        assert client.messages[-1][1][0][0]["text"] == "Abrir no ILIAS"
 
 
 def test_retention_settings_no_quota_paths_or_manual_purge(config, telegram):
@@ -501,6 +532,8 @@ def test_missing_unit_after_complete_scan_is_still_inconclusive(config, telegram
         assert all(component["event_kind"] == "health" for component in state.due(NOW + timedelta(hours=1)))
         client = Client(); bot = Bot(config, telegram, state, client, lambda: NOW + timedelta(hours=1))
         bot.handle(update("/verificar"))
+        token = client.messages[-1][1][-1][0]["callback_data"]
+        bot.handle(update(uid=2, callback=token))
         assert any("last_observation_not_current" in text for text, _ in client.messages)
 
 
@@ -567,7 +600,7 @@ def test_pending_notice_discloses_missing_historical_pending_observation(config,
     later = NOW + timedelta(hours=1)
     client = Client()
     run_monitor(config, telegram, collector=lambda c: inventory(now=later, ass="3"), client=client, clock=lambda: later)
-    pending = next(text for text, _ in client.messages if text.startswith("Pendente"))
+    pending = next(text for text, _ in client.messages if text.startswith("1 tarefa pendente"))
     assert "incompleta" in pending
 
 
@@ -581,11 +614,15 @@ def test_slow_dispatch_pauses_components_after_current_evidence_expires(config, 
             return result
     data = inventory()
     data["activities"].append(inventory(ass="3")["activities"][0])
+    data["activities"][0]["support_documents"] = [{
+        "document_id": "file:9", "title": "Blatt.pdf", "role": "support",
+        "selected_for_support": True, "cache": {"eligible": True}}]
     with MonitorState(config, telegram.state_dir).open() as state:
-        state.observe(data, NOW)
+        state.observe(data, NOW, documents=True)
         client = SlowClient()
         dispatch(state, config, telegram, client, NOW, lambda: now[0])
-        assert len(client.messages) == 1
+        assert len(client.messages) == 1 and not client.documents
+        assert state.db.execute("SELECT COUNT(*) FROM components WHERE state='sent'").fetchone()[0] == 2
         assert not state.due(now[0])
         assert state.db.execute("SELECT COUNT(*) FROM components WHERE state='paused'").fetchone()[0] == 1
 
@@ -639,7 +676,7 @@ def test_futuras_lists_not_yet_open_activities(config, telegram):
         state.observe(inventory("not_yet_open"), NOW)
         client = Client(); bot = Bot(config, telegram, state, client, lambda: NOW)
         bot.handle(update("/futuras"))
-        assert client.messages[0][0].startswith("Ainda não abertas — observação de")
+        assert client.messages[0][0].startswith("Ainda não abertas — 1 atividade; observação de")
         assert any("Übung <b>Original</b>" in text for text, _ in client.messages)
 
 
@@ -710,8 +747,9 @@ def test_activity_and_view_times_use_day_month_year_format(config, telegram):
         state.observe(inventory("pending"), NOW)
         client = Client(); bot = Bot(config, telegram, state, client, lambda: NOW)
         bot.handle(update("/pendentes"))
+        assert "observação de 14/11/2026 00:00" in client.messages[0][0]
+        bot.handle(update(uid=2, callback=client.messages[0][1][-1][0]["callback_data"]))
         text = "\n".join(t for t, _ in client.messages)
-        assert "observação de 14/11/2026 00:00" in text
         assert "Observado em: 14/11/2026 00:00" in text
         assert "2026-11-14T00:00:00Z" not in text
 
@@ -753,11 +791,10 @@ def test_ajuda_is_help_only_and_start_lists_pending(config, telegram):
         assert len(client.messages) == 1 and client.messages[0][0].startswith("/pendentes —")
         bot.handle(update("/start", uid=2))
         assert "/futuras" in client.messages[1][0]
-        assert client.messages[2][0].startswith("Pendentes — observação de")
+        assert client.messages[2][0].startswith("Pendentes — 1 atividade; observação de")
 
 
-def test_pending_message_offers_single_use_material_button(config, telegram):
-    from ilias_check.monitor import dispatch
+def test_pending_detail_offers_single_use_material_button(config, telegram):
     data = inventory()
     data["activities"][0]["support_documents"] = [
         {"document_id": "file:9", "title": "Blatt.pdf", "selected_for_support": True,
@@ -766,9 +803,13 @@ def test_pending_message_offers_single_use_material_button(config, telegram):
     with MonitorState(config, telegram.state_dir).open() as state:
         state.observe(data, NOW)
         client = Client()
-        dispatch(state, config, telegram, client, NOW, lambda: NOW)
-        callbacks = [button["callback_data"] for row in client.messages[0][1]
+        bot = Bot(config, telegram, state, client, lambda: NOW)
+        bot.handle(update("/pendentes"))
+        assert client.messages[0][1][0][0]["text"] == "Exibir todas (1)"
+        bot.handle(update(uid=2, callback=client.messages[0][1][-1][0]["callback_data"]))
+        callbacks = [button["callback_data"] for row in client.messages[-1][1]
                      for button in row if "callback_data" in button]
+        assert "envio dessa cópia pelo Telegram" in client.messages[-1][0]
         assert callbacks and callbacks[0].startswith("m:")
         token = callbacks[0][2:]
         assert state.claim_material(token, NOW) == ("1:2", "file:9")
@@ -801,3 +842,159 @@ def test_existing_state_gains_material_request_table(config, telegram):
         state.db.commit()
     with MonitorState(config, telegram.state_dir).open() as state:
         state.db.execute("SELECT token FROM material_requests").fetchall()
+
+
+def test_many_pending_events_send_one_summary_and_do_not_repeat(config, telegram):
+    data = inventory()
+    data['activities'] = [inventory(ass=str(i))['activities'][0] for i in range(65)]
+    for i, activity in enumerate(data['activities']):
+        activity['title'] = f'Original Aufgabe {i}'
+    client = Client()
+    report = run_monitor(config, telegram, collector=lambda c: data, client=client, clock=lambda: NOW)
+    assert len(client.messages) == 1 and not client.documents
+    text = client.messages[0][0]
+    assert text.startswith('65 tarefas pendentes')
+    assert all(activity['title'] in text for activity in data['activities'])
+    assert 'Bitte laden' not in text and 'kein Termin' not in text
+    assert report['sent_components'] == 65 and not report['planned_components']
+    with MonitorState(config, telegram.state_dir).open() as state:
+        assert state.db.execute("SELECT COUNT(DISTINCT message_id) FROM components").fetchone()[0] == 1
+        assert state.db.execute("SELECT COUNT(*) FROM observations WHERE notified_at IS NOT NULL").fetchone()[0] == 65
+    run_monitor(config, telegram, collector=lambda c: data, client=client, clock=lambda: NOW)
+    assert len(client.messages) == 1
+
+
+def test_partial_summary_groups_health_and_excludes_unknown_from_pending_count(config, telegram):
+    data = inventory(complete=False)
+    data['activities'] += [inventory('unknown', ass='3')['activities'][0]]
+    client = Client()
+    run_monitor(config, telegram, collector=lambda c: data, client=client, clock=lambda: NOW)
+    assert len(client.messages) == 1
+    assert client.messages[0][0].startswith('1 tarefa pendente')
+    assert 'Verificação incompleta' in client.messages[0][0]
+    assert '/verificar' in client.messages[0][0] and '/relatar' in client.messages[0][0]
+
+
+def test_summary_failure_retries_entire_batch_once_with_shared_ack(config, telegram):
+    data = inventory()
+    data['activities'] += [inventory(ass='3')['activities'][0]]
+    client = Client(TelegramError(uncertain=True))
+    run_monitor(config, telegram, collector=lambda c: data, client=client, clock=lambda: NOW)
+    with MonitorState(config, telegram.state_dir).open() as state:
+        rows = state.db.execute('SELECT * FROM components').fetchall()
+        assert all(row['state'] == 'uncertain' and row['attempts'] == 1 for row in rows)
+        assert all(row['notified_at'] is None for row in state.db.execute('SELECT * FROM observations'))
+    later = NOW + timedelta(minutes=1)
+    data['checked_at'] = stamp(later)
+    run_monitor(config, telegram, collector=lambda c: data, client=client, clock=lambda: later)
+    assert len(client.messages) == 1  # Retry delay has not elapsed.
+    later += timedelta(minutes=2)
+    data['checked_at'] = stamp(later)
+    client.fail = None
+    run_monitor(config, telegram, collector=lambda c: data, client=client, clock=lambda: later)
+    assert len(client.messages) == 2
+    with MonitorState(config, telegram.state_dir).open() as state:
+        assert not state.due(later)
+        assert state.db.execute("SELECT COUNT(*) FROM components WHERE state='sent'").fetchone()[0] == 2
+
+
+def test_long_summary_keeps_total_omission_count_and_navigation(config, telegram):
+    data = inventory()
+    data['activities'] = [inventory(ass=str(i))['activities'][0] for i in range(80)]
+    for activity in data['activities']:
+        activity['title'] = 'Originaltitel ' * 25
+    client = Client()
+    small = replace(telegram, max_message_chars=800)
+    run_monitor(config, small, collector=lambda c: data, client=client, clock=lambda: NOW)
+    assert len(client.messages) == 1
+    text = client.messages[0][0]
+    assert len(text) <= 800 and text.startswith('80 tarefas pendentes')
+    assert '… e mais ' in text and 'Exibir todas' in text
+    assert text.endswith('Detalhes, links e downloads: /pendentes')
+
+
+def test_activity_pagination_uses_buttons_and_command_always_opens_first_page(config, telegram):
+    data = inventory()
+    data['activities'] = [inventory(ass=str(i))['activities'][0] for i in range(12)]
+    with MonitorState(config, telegram.state_dir).open() as state:
+        state.observe(data, NOW)
+        client = Client(); bot = Bot(config, telegram, state, client, lambda: NOW)
+        bot.handle(update('/pendentes 3'))
+        assert len(client.messages) == 1 and 'página 1/3' in client.messages[-1][0]
+        next_button = client.messages[-1][1][0][0]['callback_data']
+        bot.handle(update(uid=2, callback=next_button))
+        assert len(client.messages) == 2 and 'página 2/3' in client.messages[-1][0]
+        back_button = client.messages[-1][1][0][0]['callback_data']
+        bot.handle(update(uid=3, callback=back_button))
+        assert len(client.messages) == 3 and 'página 1/3' in client.messages[-1][0]
+        assert '/pendentes 2' not in '\n'.join(text for text, _ in client.messages)
+        bot.handle(update(uid=4, callback=next_button))
+        assert 'Ação expirada' in client.messages[-1][0]
+
+
+def test_material_pagination_uses_buttons_without_command_arguments(config, telegram):
+    data = inventory()
+    data['activities'][0]['support_documents'] = [
+        {'document_id': f'file:{i}', 'title': f'Blatt {i}', 'selected_for_support': True, 'role': 'support'}
+        for i in range(11)]
+    with MonitorState(config, telegram.state_dir).open() as state:
+        state.observe(data, NOW)
+        client = Client(); bot = Bot(config, telegram, state, client, lambda: NOW)
+        bot.handle(update('/materiais'))
+        assert len(client.messages) == 1 and 'Página 1/2' in client.messages[-1][0]
+        token = client.messages[-1][1][-1][0]['callback_data']
+        bot.handle(update(uid=2, callback=token))
+        assert len(client.messages) == 2 and 'Página 2/2' in client.messages[-1][0]
+        assert client.messages[-1][1][-1][0]['text'] == '◀ Anterior'
+
+
+def test_detail_button_does_not_reuse_an_activity_which_left_the_view(config, telegram):
+    with MonitorState(config, telegram.state_dir).open() as state:
+        state.observe(inventory(), NOW)
+        client = Client(); bot = Bot(config, telegram, state, client, lambda: NOW)
+        bot.handle(update('/pendentes'))
+        token = client.messages[-1][1][-1][0]['callback_data']
+        state.observe(inventory('submitted'), NOW)
+        bot.handle(update(uid=2, callback=token))
+        assert 'A atividade mudou' in client.messages[-1][0]
+        assert not client.messages[-1][1]
+
+
+def test_additional_user_replies_use_their_private_chat_not_monitor_destination(config, telegram):
+    class Response:
+        status_code = 200
+        def json(self): return {'ok': True, 'result': {'message_id': 1}}
+        def close(self): pass
+    class Session:
+        def __init__(self): self.payloads = []
+        def post(self, url, **options):
+            self.payloads.append(options['json'])
+            return Response()
+    extra = replace(telegram, allowed_user_ids=('300',))
+    session = Session(); client = TelegramClient(extra, session)
+    with MonitorState(config, telegram.state_dir).open() as state:
+        state.observe(inventory(), NOW)
+        bot = Bot(config, extra, state, client, lambda: NOW)
+        bot.handle(update('/pendentes', user=300, chat=300))
+        assert session.payloads[-1]['chat_id'] == '300'
+        bot.handle(update('/ajuda', uid=2))
+        assert session.payloads[-1]['chat_id'] == '100'
+        assert client.config.chat_id == '100'
+        count = len(session.payloads)
+        bot.handle(update('/ajuda', uid=3, user=300, chat=100))
+        assert len(session.payloads) == count
+
+
+def test_history_and_document_caption_times_follow_course_zone(config, telegram):
+    activity = inventory('submitted')['activities'][0]
+    activity['submission_history'] = [{'submitted_at': stamp(NOW), 'scope': 'personal'}]
+    assert 'Entrega pessoal: 14/11/2026 01:00' in activity_message(
+        activity, stamp(NOW), timezone_name='Europe/Berlin')
+    class ClientWithCaption(TelegramClient):
+        def call(self, method, payload, files=None): return payload
+    entry = {'byte_size': 10, 'media_type': 'application/pdf', 'downloaded_at': stamp(NOW),
+             'last_validated_at': stamp(NOW), 'associations': {'1:2': {'expires_at': stamp(NOW + timedelta(days=1))}}}
+    payload = ClientWithCaption(telegram).document(None, entry, activity, stamp(NOW), 'Europe/Berlin')
+    assert 'Baixada: 14/11/2026 01:00' in payload['caption']
+    assert 'Validada: 14/11/2026 01:00' in payload['caption']
+    assert 'Expira: 15/11/2026 01:00' in payload['caption']

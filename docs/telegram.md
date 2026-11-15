@@ -36,8 +36,8 @@ falls back to its original activity link. No Telegram file ID bypasses the cache
 ## One-shot monitor
 
 ```sh
-/absolute/project/.venv/bin/ilias-check monitor --env-file /absolute/private/ilias.env --dry-run
-/absolute/project/.venv/bin/ilias-check monitor --env-file /absolute/private/ilias.env
+/opt/ilias/venv/bin/ilias-check monitor --env-file /opt/ilias/data/ilias.env --dry-run
+/opt/ilias/venv/bin/ilias-check monitor --env-file /opt/ilias/data/ilias.env
 ```
 
 Dry run can perform authorized ILIAS reads and opt-in local cache work. It plans events
@@ -48,12 +48,12 @@ Add `--progress` to stream throttled request/object counts and elapsed time to s
 while the crawl runs; the JSON report on stdout stays clean.
 Exit codes: 0 complete, 2 incomplete, 1 failed/configuration error, 3 overlapping
 private-state operation. Network work is bounded by request/depth budgets and finite
-request/stream timeouts. At most 50 due components are attempted in one invocation.
+request/stream timeouts. All due message components are grouped into one text send, with up to 49 independent attachment attempts per invocation. `sent_components` counts acknowledged components, so it can exceed the number of Telegram messages.
 
 An administrator can later install this absolute-path cron line **after authorization**:
 
 ```cron
-0 */12 * * * /absolute/project/.venv/bin/ilias-check monitor --env-file /absolute/private/ilias.env >> /absolute/private/monitor.log 2>&1
+0 */12 * * * /opt/ilias/venv/bin/ilias-check monitor --env-file /opt/ilias/data/ilias.env >> /opt/ilias/data/monitor.log 2>&1
 ```
 
 Create the private log with mode 0600 first. This documentation installs nothing.
@@ -65,13 +65,22 @@ modify ILIAS. No service unit is automatically installed.
 
 State defaults to `~/.local/share/ilias-check/monitor` (0700, outside checkouts). SQLite
 files are 0600 and namespaced by installation/client/account identity, never passwords.
-Version 1 creates tables transactionally, rejects newer versions and rolls back failed
-migrations. Short transactions coordinate the worker and cron. An account run lock
+Schema version 2 adds durable material-request tokens; version 1 migrates
+transactionally. Unsupported newer versions are rejected and failed migrations roll
+back. Short transactions coordinate the worker and cron. An account run lock
 covers collection/planning/dispatch; overlapping runs defer with a safe diagnostic.
 The cache has its own root-wide lock and bounded reader protection.
 
 New confirmed pending units alert once. Deadline/support-version changes create a new
-event. Unchanged observations do not alert every 12 hours. `ILIAS_PENDING_REMINDER_HOURS`
+event. Due pending and incomplete-check message events share one summary with the
+current confirmed pending count and a simple list of original titles. Details,
+source navigation, and support-download buttons are available through `/pendentes`.
+Unknown/missing activities do not inflate the confirmed pending count. A long list
+is shortened with an omission count and a pointer to “Exibir todas”; the monitor
+does not emit additional summary messages just to list more titles. All due text
+components share the returned message ID; a failed summary leaves each component
+retryable, and unchanged successful summaries are not repeated. Unchanged observations
+do not alert every 12 hours. `ILIAS_PENDING_REMINDER_HOURS`
 defaults to 0 (disabled); a positive integer enables reminders after acknowledged
 alerts. Submitted-to-pending starts a new episode. Closed work remains consultable
 without ordinary pending reminders. Unknown/incomplete checks generate deduplicated
@@ -106,40 +115,63 @@ configuration separately; the cache is disposable and never a source of truth.
 ## Interactive commands
 
 ```sh
-/absolute/project/.venv/bin/ilias-check bot --env-file /absolute/private/ilias.env
+/opt/ilias/venv/bin/ilias-check bot --env-file /opt/ilias/data/ilias.env
 ```
 
-Every command and callback requires the configured sender in the configured private
-chat, including forwarded buttons. A token/destination worker lock prevents duplicate
-pollers using the same state store. Update cursors persist before side effects; replay
-cannot repeat a setting/send, although a crash can lose a reply. Buttons are opaque,
-account-local, single-use and expire after 30 minutes/restart. Incoming updates are
-bounded to 25 per poll, authorized requests to 20 per minute, activity pages to four,
-and material pages to ten. Source checks for material requests are serialized, bounded
-by collector limits and throttled to one per five minutes across worker restarts.
+Every command and callback requires an explicitly authorized sender in a permitted
+private chat, including forwarded buttons. `TELEGRAM_ALLOWED_USER_ID` identifies the
+primary owner. Optional `TELEGRAM_ALLOWED_USER_IDS=300,400` grants additional users
+access to the same configured ILIAS account in their own private chats. Replies go
+to the requesting user's chat; monitor notifications keep the configured destination
+and are not broadcast to the allowlist. Request limits, report drafts, and transient
+navigation tokens are isolated per user.
+
+A token/destination worker lock prevents duplicate pollers using the same state
+store. Update cursors persist before side effects; replay cannot repeat a setting
+or send, although a crash can lose a reply. Navigation buttons are opaque,
+account-local, single-use, user-bound, and expire after 30 minutes or restart.
+Durable material buttons stored in SQLite survive restart and expire after 24 hours;
+authorization and fresh eligibility checks still apply. Incoming updates are bounded
+to 25 per poll, authorized requests to 20 per minute per user, compact activity pages
+to five entries, and material pages to ten. Source checks for material requests are
+serialized, bounded by collector limits, and throttled to one per five minutes
+across worker restarts.
+
+The worker registers the supported Portuguese command menu with `setMyCommands` at
+startup. Display timestamps use `DD/MM/YYYY HH:MM` (24 hours) in `ILIAS_TIMEZONE`,
+or UTC when no course zone is configured. JSON and persisted timestamps remain UTC.
 
 | Command | Meaning |
 | --- | --- |
 | `/start` | Portuguese help and pending-first view |
 | `/ajuda` | Portuguese help only |
-| `/pendentes [page]` | Confirmed pending file uploads, with stale warnings |
-| `/entregues [page]` | Historical personal/team delivery metadata; approval separate |
-| `/encerradas [page]` | Closed without submission |
-| `/futuras [page]` | Period not open yet |
-| `/verificar [page]` | “Inconclusivo — precisa verificar”, reasons/time/source and feedback invitation |
+| `/pendentes` | Confirmed pending file uploads, with stale warnings |
+| `/entregues` | Historical personal/team delivery metadata; approval separate |
+| `/encerradas` | Closed without submission |
+| `/futuras` | Period not open yet |
+| `/verificar` | “Inconclusivo — precisa verificar”, reasons/time/source and feedback invitation |
 | `/resumo` | Count per situation plus coverage warnings |
-| `/materiais [page]` | Explicit selected-material transmission request |
-
-Eligible support files also appear as `Baixar: …` buttons directly under pending
-activity messages, including notifications sent by the monitor. Those buttons are
-single-use, expire after 24 hours and still trigger a fresh ILIAS check before any
-file leaves the host.
+| `/materiais` | Explicit selected-material transmission request |
 | `/configuracoes` | Retention, measured managed usage/quota/time without host paths |
 | `/retencao sem_prazo 24` | Positive no-deadline retention hours |
 | `/retencao limite 48` | Optional additional cap in hours |
 | `/retencao padrao` | Restore host default retention policy |
 | `/relatar` | Description / expected / actual / optional safe source link |
 | `/cancelar` | Discard the current dialogue |
+
+Activity-list commands always open page one. Use the “Anterior” and “Próxima”
+buttons to change pages, rather than typing a page number after the command.
+Each ordinary request/click sends one compact list message with count, observation
+time, page position, and numbered activity buttons. Selecting a number opens that
+activity's details. “Exibir todas” explicitly expands all activity detail messages;
+ordinary pagination never does so. `/materiais` also uses navigation buttons.
+
+Eligible support files appear as up to two `Baixar: …` buttons under a pending
+activity's **detail**, including metadata-only references. The disclosure explains
+that a click authorizes the selected transmission through Telegram after a new
+ILIAS check. The monitor summary points to `/pendentes` instead of sending individual
+activity details or download-button messages. Automatic attachments still require
+the separate sharing setting.
 
 Original titles/instructions/filenames remain unchanged in their source language.
 Long instructions have an explicit continuation notice and source link. Team delivery

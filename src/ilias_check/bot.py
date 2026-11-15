@@ -1,4 +1,4 @@
-"""Single-owner Portuguese long-poll worker over shared observations and cache."""
+"""Authorized Portuguese long-poll worker over shared observations and cache."""
 from __future__ import annotations
 
 from collections import Counter, deque
@@ -27,6 +27,7 @@ _HELP = ("/pendentes — uploads pendentes\n/entregues — histórico de entrega
          "/futuras — ainda não abertas\n/verificar — inconclusivas\n/resumo — contagem por situação\n"
          "/materiais — apoio disponível\n/configuracoes — retenção e uso\n"
          "/relatar — feedback sobre este software\n/cancelar — cancelar diálogo\n"
+         "As listas vêm paginadas; toque no número para ver detalhes, links e downloads, ou em “Exibir todas”. "
          "Os textos do ILIAS permanecem originais. A fonte pode exigir login no navegador. Entrega não significa aprovação. "
          "Envie respostas às atividades manualmente no ILIAS; arquivos recebidos aqui não são processados. "
          "Rascunhos de relatos são descartados após reinício ou 30 minutos.")
@@ -62,6 +63,7 @@ _COMMANDS = (
     {"command": "cancelar", "description": "Cancelar diálogo"},
 )
 _FIELDS = ("descrição", "esperado", "ocorrido", "link")
+_PAGE = 5
 _PROMPTS = ("Descreva o problema deste software (somente texto, até 800 caracteres).",
             "Como você esperava que o bot se comportasse ou exibisse a atividade?",
             "O que o bot exibiu ou fez?", "Link original da atividade (HTTPS sem sessão), ou - para omitir.")
@@ -123,9 +125,14 @@ class Bot:
             return
         requests.append(now)
         self.draft = self.drafts.get(uid)
+        original_client = self.client
         try:
+            route = getattr(original_client, "for_chat", None)
+            if callable(route):
+                self.client = route(self._sender(update)[1]["id"])
             self._dispatch(update, uid, now)
         finally:
+            self.client = original_client
             if self.draft is None:
                 self.drafts.pop(uid, None)
             else:
@@ -171,15 +178,13 @@ class Bot:
         elif command.startswith("/"):
             if command == "/start":
                 self.client.message(_HELP)
-                self._view("pending", 1)
+                self._view("pending", 1, uid)
             elif command == "/ajuda":
                 self.client.message(_HELP)
             elif command in _VIEWS:
-                page = int(parts[1]) if len(parts) == 2 and parts[1].isdigit() else 1
-                self._view(_VIEWS[command], page)
+                self._view(_VIEWS[command], 1, uid)
             elif command == "/materiais":
-                page = int(parts[1]) if len(parts) == 2 and parts[1].isdigit() else 1
-                self._materials(page, uid)
+                self._materials(1, uid)
             elif command == "/configuracoes":
                 self._settings()
             elif command == "/resumo":
@@ -218,32 +223,102 @@ class Bot:
         self.tokens[token] = (action, payload, now, owner)
         return token
 
-    def _view(self, status, page):
+    def _view(self, status, page, uid):
         rows = self._observations(status)
-        page_count = max(1, (len(rows) + 3) // 4)
+        page_count = max(1, (len(rows) + _PAGE - 1) // _PAGE)
         page = min(max(page, 1), page_count)
         snapshot = self.state.snapshot() or {}
-        incomplete = not snapshot.get("observation_complete", False) or not snapshot.get("classification", {}).get("complete", False) or any(not c["complete"] for c in snapshot.get("coverage", []))
-        text = (f"{_TITLES[status]} — observação de {self._observed(snapshot)}; "
-                f"página {page}/{page_count}.")
+        plural = "s" if len(rows) != 1 else ""
+        lines = [f"{_TITLES[status]} — {len(rows)} atividade{plural}; "
+                 f"observação de {self._observed(snapshot)}; página {page}/{page_count}."]
         if not rows:
-            text += " " + _EMPTY[status]
+            lines.append(_EMPTY[status])
             counts = self._counts(snapshot)
             if counts:
-                text += f" Resumo: {_counts_text(counts)}; use /resumo."
-        if incomplete:
+                lines.append(f"Resumo: {_counts_text(counts)}; use /resumo.")
+        if self._incomplete(snapshot):
             if status == "unknown":
-                text += " " + (self._health_text(snapshot) or "A última verificação não foi concluída.")
+                lines.append(self._health_text(snapshot) or "A última verificação não foi concluída.")
             else:
-                text += " Verificação incompleta; detalhes em /verificar."
-        self.client.message(text)
-        for activity, checked, stale in rows[(page - 1) * 4:page * 4]:
-            stale = stale or self.clock() - instant(checked) > timedelta(hours=12)
-            buttons = source_buttons(activity) + self.state.material_buttons(activity, self.clock())
-            self.client.message(activity_message(activity, checked, incomplete, stale, self._timezone()), buttons)
-        if page < page_count:
-            command = next((k for k, v in _VIEWS.items() if v == status), "/pendentes")
-            self.client.message(f"Próxima página: {command} {page + 1}")
+                lines.append("Verificação incompleta; detalhes em /verificar.")
+        first = (page - 1) * _PAGE + 1
+        shown = rows[first - 1:first - 1 + _PAGE]
+        if shown:
+            lines.append("")
+            for offset, (activity, checked, stale) in enumerate(shown, first):
+                lines.append(f"{offset}. {self._summary_line(activity, checked, stale)}")
+            lines.append("")
+            lines.append("Toque no número para ver prazo, motivo, links e downloads.")
+        self.client.message("\n".join(lines),
+                            self._page_buttons(status, page, page_count, len(rows), shown, first, uid))
+
+    def _page_buttons(self, status, page, page_count, total, shown, first, uid):
+        rows = []
+        if page_count > 1:
+            nav = []
+            if page > 1:
+                nav.append({"text": "◀ Anterior",
+                            "callback_data": self._token("page", (status, page - 1), uid)})
+            if page < page_count:
+                nav.append({"text": "Próxima ▶",
+                            "callback_data": self._token("page", (status, page + 1), uid)})
+            rows.append(nav)
+        if shown:
+            rows.append([{"text": f"Exibir todas ({total})",
+                          "callback_data": self._token("all", (status,), uid)}])
+        if shown:
+            rows.append([{"text": str(first + index),
+                          "callback_data": self._token("detail", (status, association_id(activity)), uid)}
+                         for index, (activity, _, _) in enumerate(shown)])
+        return rows
+
+    def _summary_line(self, activity, checked, stale):
+        hints = []
+        if activity["status"] in {"pending", "not_yet_open"}:
+            if activity.get("deadline_at"):
+                hints.append("prazo " + format_time(activity["deadline_at"], self._timezone()))
+            elif activity.get("deadline_text"):
+                hints.append(str(activity["deadline_text"])[:60])
+            else:
+                hints.append("sem prazo")
+        elif activity["status"] == "unknown":
+            hints.append("precisa verificar")
+        elif activity["status"] == "submitted":
+            history = activity.get("submission_history") or []
+            moment = format_time(history[0]["submitted_at"], self._timezone()) if history and history[0].get("submitted_at") else None
+            hints.append("entrega " + moment if moment else "entrega registrada")
+        hint = " — " + "; ".join(hints) if hints else ""
+        old = " (observação antiga)" if stale or self.clock() - instant(checked) > timedelta(hours=12) else ""
+        return " ".join(activity["title"].split())[:120] + hint + old
+
+    def _send_detail(self, activity, checked, stale):
+        snapshot = self.state.snapshot() or {}
+        stale = stale or self.clock() - instant(checked) > timedelta(hours=12)
+        buttons = source_buttons(activity)
+        if activity["status"] == "pending":
+            buttons += self.state.material_buttons(activity, self.clock())
+        text = activity_message(activity, checked, self._incomplete(snapshot), stale, self._timezone())
+        if any("callback_data" in button for row in buttons for button in row):
+            disclosure = "Baixar autoriza o envio dessa cópia pelo Telegram após nova verificação no ILIAS."
+            available = max(0, self.telegram.max_message_chars - len(disclosure) - 2)
+            text = text[:available] + "\n\n" + disclosure
+        self.client.message(text, buttons)
+
+    def _all(self, status, uid):
+        rows = self._observations(status)
+        if not rows:
+            self._view(status, 1, uid)
+            return
+        snapshot = self.state.snapshot() or {}
+        self.client.message(f"{_TITLES[status]} — todas as {len(rows)} atividades; "
+                            f"observação de {self._observed(snapshot)}.")
+        for activity, checked, stale in rows:
+            self._send_detail(activity, checked, stale)
+
+    def _incomplete(self, snapshot):
+        return (not snapshot.get("observation_complete", False)
+                or not snapshot.get("classification", {}).get("complete", False)
+                or any(not item["complete"] for item in snapshot.get("coverage", [])))
 
     def _timezone(self):
         return self.config.classification_policy.timezone
@@ -297,12 +372,20 @@ class Bot:
         for activity, material in candidates[(page - 1) * 10:page * 10]:
             token = self._token("download", (association_id(activity), material["document_id"]), uid)
             buttons.append([{"text": ("Baixar pelo Telegram: " + material["title"])[:64], "callback_data": token}])
+        if page_count > 1:
+            nav = []
+            if page > 1:
+                nav.append({"text": "◀ Anterior",
+                            "callback_data": self._token("materials_page", (page - 1,), uid)})
+            if page < page_count:
+                nav.append({"text": "Próxima ▶",
+                            "callback_data": self._token("materials_page", (page + 1,), uid)})
+            buttons.append(nav)
         self.client.message("Ao tocar em um material, você autoriza enviar essa cópia pelo Telegram. Isso não ativa anexos automáticos futuros. "
                             "O envio exige nova verificação no ILIAS; ele pode estar mais atualizado. Cópias já enviadas não podem ser revogadas. "
                             f"Página {page}/{page_count}." if buttons else
                             "Nenhum apoio confirmado disponível. Confira a atividade no ILIAS ou /verificar.", buttons)
-        if page < page_count:
-            self.client.message(f"Próxima página: /materiais {page + 1}")
+
 
     def _callback(self, token, uid):
         if token.startswith("m:"):
@@ -319,6 +402,21 @@ class Bot:
                 return
             action, payload, _, _ = entry
         if action != "download":
+            if action == "page":
+                self._view(payload[0], payload[1], uid)
+            elif action == "materials_page":
+                self._materials(payload[0], uid)
+            elif action == "detail":
+                # Resolve through the same view as the list: submitted history and
+                # derived unknown rows must not silently become a current pending item.
+                row = next((row for row in self._observations(payload[0])
+                            if association_id(row[0]) == payload[1]), None)
+                if row is None:
+                    self.client.message("A atividade mudou desde a listagem. Abra o menu novamente.")
+                else:
+                    self._send_detail(*row)
+            elif action == "all":
+                self._all(payload[0], uid)
             return
         aid, document_id = payload
         now = self.clock()
@@ -354,7 +452,7 @@ class Bot:
             updated = cache_inventory(inventory, config, Authenticator(config, transport), self.clock)
             activity = next(a for a in updated["activities"] if association_id(a) == association_id(activity))
             with SupportCache(config, self.clock).delivery(material["document_id"], activity, updated["checked_at"]) as (source, entry):
-                self.client.document(source, entry, activity, updated["checked_at"])
+                self.client.document(source, entry, activity, updated["checked_at"], self._timezone())
         finally:
             transport.close()
 

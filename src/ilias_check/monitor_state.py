@@ -202,10 +202,21 @@ class MonitorState:
                     state = "uncertain" if row["state"] == "uncertain" else "queued"
             self.db.execute("UPDATE components SET state=? WHERE rowid=?", (state, row["rid"]))
 
-    def due(self, now):
+    def due(self, now, *, kind=None, limit=50):
         with self.db:
             self._reconcile(now)
-        return self.db.execute("SELECT c.*,e.activity_id,e.generation,e.kind AS event_kind FROM components c JOIN events e ON c.event_id=e.id WHERE c.state IN ('queued','uncertain') AND (retry_at IS NULL OR retry_at<=?) AND attempts<5 ORDER BY e.created_at,c.kind DESC LIMIT 50", (stamp(now),)).fetchall()
+        query = ("SELECT c.*,e.activity_id,e.generation,e.kind AS event_kind FROM components c "
+                 "JOIN events e ON c.event_id=e.id WHERE c.state IN ('queued','uncertain') "
+                 "AND (retry_at IS NULL OR retry_at<=?) AND attempts<5")
+        parameters = [stamp(now)]
+        if kind is not None:
+            query += " AND c.kind=?"
+            parameters.append(kind)
+        query += " ORDER BY e.created_at,c.kind DESC"
+        if limit is not None:
+            query += " LIMIT ?"
+            parameters.append(limit)
+        return self.db.execute(query, parameters).fetchall()
 
     def dispatchable(self, component, now):
         """Recheck a prefetched component immediately before its external side effect."""

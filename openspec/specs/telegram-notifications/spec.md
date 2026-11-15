@@ -13,15 +13,30 @@ Telegram delivery SHALL require explicit enablement, bot credentials, and one co
 - **WHEN** delivery is enabled without a recipient chat ID
 - **THEN** monitoring reports a configuration error rather than choosing a chat automatically
 
-### Requirement: Actionable assignment messages
-Each assignment notification SHALL include title, root-relative path, status reason, deadline with timezone or explicit absence, and a manual delivery link. Sequence-entry links SHALL be labeled as sequence entry rather than direct upload. Partial checks and contextual support SHALL be identified clearly.
+### Requirement: One pending summary message
+Due pending events SHALL produce one summary text message containing the total currently confirmed pending count and a simple list of original titles, without per-task detailed notifications. Due incomplete-check information SHALL share that message. Unknown or missing historical activities SHALL NOT count as confirmed pending. First-observation, change, and optional reminder triggers SHALL remain unchanged; grouping SHALL NOT add a periodic daily digest.
+
+#### Scenario: Several pending tasks in one check
+- **WHEN** a check confirms ten pending tasks with due alerts and incomplete coverage
+- **THEN** one text message reports ten pending tasks, lists their titles, and discloses incomplete verification without ten individual activity messages
+
+#### Scenario: More events than the old dispatch batch
+- **WHEN** sixty-five pending message components are due at once
+- **THEN** one summary acknowledges all included due message components and unchanged subsequent checks do not emit another summary for the remainder
+
+#### Scenario: Summary exceeds the message limit
+- **WHEN** all pending titles cannot fit in one configured Telegram message
+- **THEN** the message preserves the total, shows a bounded title list with an omission count, and directs the user to the interactive list without flooding the chat
+
+### Requirement: Activity details on request
+Detailed activity views SHALL include the original title and instructions, root-relative path, status reason, deadline with timezone or explicit absence, and manual source navigation. The compact notification SHALL direct users to `/pendentes` for these details and selected support-download buttons. Sequence-entry links SHALL be labeled as sequence entry rather than direct upload. Partial checks and contextual support SHALL be identified clearly.
 
 #### Scenario: No configured deadline
-- **WHEN** a pending assignment has no deadline
-- **THEN** the message states that no deadline is configured rather than inventing one
+- **WHEN** a pending assignment has no deadline and the user opens its details
+- **THEN** the detail message states that no deadline is configured rather than inventing one
 
 #### Scenario: Sequence entry only
-- **WHEN** only the learning-sequence URL is available
+- **WHEN** only the learning-sequence URL is available in an activity detail
 - **THEN** the message labels it as sequence entry and does not claim it opens an upload form directly
 
 ### Requirement: Portuguese interface with original ILIAS content
@@ -84,3 +99,17 @@ The adapter SHALL escape untrusted titles and text, disable unsolicited URL prev
 #### Scenario: Malicious title or transport error
 - **WHEN** an assignment title contains formatting markup or a client error includes a token-bearing request URL
 - **THEN** the title is rendered safely and the recorded error contains no token
+
+### Requirement: Local display timestamps
+Software-generated Telegram timestamps SHALL use `DD/MM/YYYY HH:MM` with a 24-hour clock, converted to `ILIAS_TIMEZONE` when configured and UTC otherwise. Unknown source dates SHALL remain unknown. Source text SHALL NOT be rewritten to invent a parsed date.
+
+#### Scenario: Bonn observation time
+- **WHEN** an observation at `2026-11-15T01:24:54Z` is displayed with `ILIAS_TIMEZONE=Europe/Berlin`
+- **THEN** the bot displays `15/11/2026 02:24` while persisted inventory timestamps remain UTC
+
+### Requirement: Bounded single-message title list
+If all titles cannot fit the configured message limit, the summary SHALL preserve the total, disclose omitted entries, and direct the user to `/pendentes` and “Exibir todas”. It SHALL NOT send additional summary messages merely to finish the title list.
+
+#### Scenario: Many long task titles
+- **WHEN** a summary would exceed the configured message limit
+- **THEN** one bounded message includes a partial title list, omission count, and interactive navigation

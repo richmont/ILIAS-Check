@@ -3,7 +3,7 @@
 ILIAS-Check helps a learner keep track of file-upload assignments in ILIAS. It
 reads the repositories the learner selects, checks each assignment unit, and
 keeps pending work, submitted work and uncertain results separately visible.
-The same information is available as JSON and through a private Telegram bot.
+The same information is available as JSON and through an authorized private Telegram bot.
 
 The project is intended for authorized personal access to one configured ILIAS
 account and installation. Its initial compatibility target is ILIAS 9.23, based
@@ -171,7 +171,9 @@ does not grant rights to redistribute course materials. See
 
 Notifications are **disabled by default**, as is automatic document sharing. Enabling
 messages does not enable attachments. The worker requires a configured bot token,
-private chat ID and allowed user ID; every command and callback checks authorization.
+private chat ID and allowed user IDs; every command and callback checks authorization.
+Optional `TELEGRAM_ALLOWED_USER_IDS` grants additional users private access to the
+same ILIAS account, while notifications keep their configured destination.
 Incoming answer files are not downloaded or forwarded to ILIAS.
 
 The Portuguese interface includes `/pendentes`, `/entregues`, `/encerradas`,
@@ -184,7 +186,11 @@ sharing; it opens no public issue and contacts no teacher or administrator.
 The monitor and worker are separate processes. The monitor is suitable for an
 external schedule such as every twelve hours; unchanged work does not repeatedly
 notify unless reminders are configured. Retries are recorded per message/attachment,
-and ambiguous network outcomes can produce duplicates. No cron job or service is
+and ambiguous network outcomes can produce duplicates. Due text alerts are grouped
+into one message with the pending count and original titles. `/pendentes` opens a
+compact five-item page with navigation buttons, numbered detail buttons, and an
+explicit “Exibir todas” option. Details retain source and selected-material download
+buttons. No cron job or service is
 installed automatically.
 
 The implementation has been tested offline with fake Telegram transports. Real
@@ -196,7 +202,7 @@ Follow the [Telegram operations guide](docs/telegram.md) and
 ## Development status and verification
 
 The collector, assignment classifier, support cache, scheduled monitor and private
-bot are implemented. The reviewed offline suite contains **408 passing tests**:
+bot are implemented. The reviewed offline suite contains **437 passing tests**:
 
 ```sh
 .venv/bin/pytest -q

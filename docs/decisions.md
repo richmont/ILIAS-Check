@@ -1,14 +1,17 @@
 # Project decisions
 
-Status: accepted product decisions, recorded 2026-11-14. Implementation is pending.
-Technical defaults below are proposed implementation details where identified.
+Status: accepted product decisions, initially recorded 2026-11-14 and updated with
+the subsequent bot-usage session. Core implementation is complete; the dated review
+and later sections record follow-up behavior. Historical implementation-order notes
+below describe the original plan.
 
 ## 1. Purpose and boundaries
 
 The primary function is alerting the configured learner about pending file-upload
 assignments. Authorized queries and support-material downloads reduce navigation.
-The initial deployment is one ILIAS installation, account, Telegram user, and
-private chat. Initial adapter compatibility targets ILIAS 9_23.
+Each invocation uses one ILIAS installation and account. The original single-user
+setup now permits an explicit additional-user allowlist, with private replies and
+one configured monitor-notification destination. Initial adapter compatibility targets ILIAS 9_23.
 
 ILIAS operations are read-only except authentication/session maintenance. Never
 upload answers or attachments, submit text, finish learner steps, change enrollment,
@@ -122,7 +125,10 @@ even when the bot successfully supplies a cached copy.
 
 Checking every 12 hours is separate from repeating alerts. Keep the existing
 first-observation/change alert policy; repeats remain configurable and disabled
-by default. A daily digest was discussed as a recommendation, not accepted scope.
+by default. Due alert events now share one summary containing the confirmed pending
+count and original titles, with incomplete-check information in the same text. This
+is event grouping, not a new periodic daily digest or reminder schedule. Long lists
+show an omission count and point to the interactive list instead of flooding the chat.
 
 Revalidate queued notifications against the latest successful relevant check.
 Cancel events superseded by a confirmed submission, exclusion, closure, or a
@@ -146,8 +152,11 @@ Initial implementation prepares a reviewed report for manual issue submission;
 automatic GitHub issue creation or another reporting backend is out of scope.
 
 Incoming user documents are not accepted as ILIAS answers or forwarded anywhere.
-All commands, callbacks, and downloads require the configured user and private
-chat; knowing a document ID or pressing an old button is not authorization.
+All commands, callbacks, and downloads require an explicitly authorized user in
+a permitted private chat; knowing a document ID or pressing an old button is not
+authorization. Additional users share the configured ILIAS account, with isolated
+report drafts, transient buttons, and request limits. Responses go to the requesting
+private chat; notifications are not automatically broadcast to all permitted users.
 
 ## 8. Licensing and implementation order
 
@@ -216,3 +225,42 @@ bot deveria exibi-la.” Feedback is intended to guide later display rules and
 compatibility fixes; receipt of feedback alone does not prove submission,
 completion, or non-applicability and does not change ILIAS state. The Telegram
 feedback flow is implemented in the private worker; live activation remains separate.
+
+## 12. Accepted installation and bot-usage refinements
+
+The following session decisions are reflected in the main capability specs:
+
+- Installation documentation defaults to English, with Brazilian Portuguese and
+  German variants. Clone the merged `main` branch into `/opt/ilias/check`; use
+  `/opt/ilias/venv` for execution and `/opt/ilias/data` for dotenv, JSON, SQLite,
+  downloaded documents, and logs. Bonn uses `Europe/Berlin`.
+- `collect --progress` and `monitor --progress` report root/request/object counts
+  and elapsed time on stderr, keeping JSON stdout separate. Normal page reads reuse
+  the authenticated session; a separate login is not performed for each request.
+- Optional `TELEGRAM_ALLOWED_USER_IDS` grants explicitly listed users access to the
+  same account in their own private chats. Report drafts, navigation tokens, and
+  request budgets are isolated per user; the monitor destination remains explicit.
+- The worker registers its command menu on startup. `/ajuda` sends help only;
+  `/start` sends help and the first pending page. `/futuras` exposes not-yet-open
+  work, and `/resumo` counts states with coverage warnings.
+- Telegram display timestamps use `DD/MM/YYYY HH:MM` in the configured course zone
+  (UTC fallback); saved JSON keeps UTC timestamps. Original source text is retained.
+- A pending alert is one message with the current confirmed pending count and a
+  simple title list. Health warnings share that message. Unknown and missing
+  historical observations are not counted as confirmed pending. Existing event
+  deduplication, optional reminders, bounded retries, and attachment consent remain.
+- Activity queries show five summaries in one page message. Pagination uses
+  “Anterior” and “Próxima” buttons, never a numeric argument after the command.
+  Number buttons open a single detail; “Exibir todas” is the explicit choice to
+  expand all detail messages. Material pagination uses buttons too, ten per page.
+- Pending details expose up to two selected-support download buttons, including
+  metadata-only references. Clicking authorizes only the selected transmission,
+  after a fresh ILIAS eligibility check. The compact monitor summary points to
+  `/pendentes` for these actions. Existing durable material tokens expire after
+  24 hours, are single-use, and survive worker restart without bypassing checks.
+- Submitted-history and needs-verification detail buttons retain their view's
+  meaning even when current observations differ. Missing evidence remains unknown;
+  no display action submits or completes ILIAS work.
+
+These refinements were verified with offline transports. They do not install or
+restart services, edit host credentials, schedule jobs, or send live messages.
