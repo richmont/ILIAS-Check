@@ -353,27 +353,34 @@ Prüfen Sie die Konfiguration **ohne Netzwerk und ohne den Worker zu starten**:
 /opt/ilias/venv/bin/python - <<'PY'
 from pathlib import Path
 from ilias_check.config import CollectorConfig, ConfigurationError, load_environment
-from ilias_check.cache_config import CacheError
+from ilias_check.cache_config import CacheError, boolean
 from ilias_check.telegram import TelegramConfig
 
 path = Path('/opt/ilias/data/ilias.env')
 try:
     values = load_environment(path)
     required = ('ILIAS_BASE_URL', 'ILIAS_CLIENT_ID', 'ILIAS_USER', 'ILIAS_PASS',
-                'ILIAS_PENDING_ROOTS', 'TELEGRAM_BOT_TOKEN', 'TELEGRAM_CHAT_ID',
-                'TELEGRAM_ALLOWED_USER_ID')
+                'ILIAS_PENDING_ROOTS')
     if any('REPLACE' in str(values.get(key, '')) for key in required):
         raise ConfigurationError('Die Konfiguration enthält noch REPLACE-Felder.')
     CollectorConfig.from_mapping(values)
-    TelegramConfig.from_mapping(values, worker=True)
+    enabled = boolean(values, 'ILIAS_TELEGRAM_ENABLED')
+    if enabled:
+        telegram = ('TELEGRAM_BOT_TOKEN', 'TELEGRAM_CHAT_ID', 'TELEGRAM_ALLOWED_USER_ID')
+        if any('REPLACE' in str(values.get(key, '')) for key in telegram):
+            raise ConfigurationError('Die Telegram-Einstellungen enthalten noch REPLACE-Felder.')
+        TelegramConfig.from_mapping(values, worker=True)
 except (ConfigurationError, CacheError) as exc:
     raise SystemExit(f'Ungültige Konfiguration: {exc}') from None
-print('Konfiguration gültig. Es wurde keine Verbindung hergestellt.')
+print(f"Konfiguration gültig (Telegram {'aktiv' if enabled else 'deaktiviert'}). Es wurde keine Verbindung hergestellt.")
 PY
 ```
 
 Diese Prüfung kontrolliert das Format, nicht die Zugangsdaten, und belegt nicht, dass
-die IDs Ihnen gehören. Bestätigen Sie diese Identität vor dem echten Test.
+die IDs Ihnen gehören. Bestätigen Sie diese Identität vor dem echten Test. Solange
+`ILIAS_TELEGRAM_ENABLED=false` gilt, prüft sie nur die ILIAS-/Collector-Einstellungen;
+die Worker-Prüfungen laufen erst nach dem Aktivieren von Telegram, sodass derselbe
+Block auch vor diesem Schritt funktioniert.
 
 Sie können den Monitor auch simulieren:
 

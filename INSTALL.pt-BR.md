@@ -341,27 +341,34 @@ Valide a configuração, **sem rede e sem iniciar o worker**:
 /opt/ilias/venv/bin/python - <<'PY'
 from pathlib import Path
 from ilias_check.config import CollectorConfig, ConfigurationError, load_environment
-from ilias_check.cache_config import CacheError
+from ilias_check.cache_config import CacheError, boolean
 from ilias_check.telegram import TelegramConfig
 
 path = Path('/opt/ilias/data/ilias.env')
 try:
     values = load_environment(path)
     required = ('ILIAS_BASE_URL', 'ILIAS_CLIENT_ID', 'ILIAS_USER', 'ILIAS_PASS',
-                'ILIAS_PENDING_ROOTS', 'TELEGRAM_BOT_TOKEN', 'TELEGRAM_CHAT_ID',
-                'TELEGRAM_ALLOWED_USER_ID')
+                'ILIAS_PENDING_ROOTS')
     if any('REPLACE' in str(values.get(key, '')) for key in required):
         raise ConfigurationError('Ainda há campos REPLACE na configuração.')
     CollectorConfig.from_mapping(values)
-    TelegramConfig.from_mapping(values, worker=True)
+    enabled = boolean(values, 'ILIAS_TELEGRAM_ENABLED')
+    if enabled:
+        telegram = ('TELEGRAM_BOT_TOKEN', 'TELEGRAM_CHAT_ID', 'TELEGRAM_ALLOWED_USER_ID')
+        if any('REPLACE' in str(values.get(key, '')) for key in telegram):
+            raise ConfigurationError('Ainda há campos REPLACE na configuração do Telegram.')
+        TelegramConfig.from_mapping(values, worker=True)
 except (ConfigurationError, CacheError) as exc:
     raise SystemExit(f'Configuração inválida: {exc}') from None
-print('Configuração válida. Nenhuma conexão foi realizada.')
+print(f"Configuração válida (Telegram {'ativo' if enabled else 'desativado'}). Nenhuma conexão foi realizada.")
 PY
 ```
 
 Essa validação confere o formato, não autentica credenciais nem comprova que os IDs
-pertencem a você. Confirme essa identidade antes do teste real.
+pertencem a você. Confirme essa identidade antes do teste real. Enquanto
+`ILIAS_TELEGRAM_ENABLED=false`, ela valida somente as configurações do ILIAS/coletor;
+as verificações do worker rodam quando o Telegram é habilitado, então o mesmo bloco
+pode ser usado antes desta etapa.
 
 Você também pode simular o monitor:
 

@@ -343,27 +343,34 @@ Validate the configuration, **without network and without starting the worker**:
 /opt/ilias/venv/bin/python - <<'PY'
 from pathlib import Path
 from ilias_check.config import CollectorConfig, ConfigurationError, load_environment
-from ilias_check.cache_config import CacheError
+from ilias_check.cache_config import CacheError, boolean
 from ilias_check.telegram import TelegramConfig
 
 path = Path('/opt/ilias/data/ilias.env')
 try:
     values = load_environment(path)
     required = ('ILIAS_BASE_URL', 'ILIAS_CLIENT_ID', 'ILIAS_USER', 'ILIAS_PASS',
-                'ILIAS_PENDING_ROOTS', 'TELEGRAM_BOT_TOKEN', 'TELEGRAM_CHAT_ID',
-                'TELEGRAM_ALLOWED_USER_ID')
+                'ILIAS_PENDING_ROOTS')
     if any('REPLACE' in str(values.get(key, '')) for key in required):
         raise ConfigurationError('The configuration still contains REPLACE fields.')
     CollectorConfig.from_mapping(values)
-    TelegramConfig.from_mapping(values, worker=True)
+    enabled = boolean(values, 'ILIAS_TELEGRAM_ENABLED')
+    if enabled:
+        telegram = ('TELEGRAM_BOT_TOKEN', 'TELEGRAM_CHAT_ID', 'TELEGRAM_ALLOWED_USER_ID')
+        if any('REPLACE' in str(values.get(key, '')) for key in telegram):
+            raise ConfigurationError('The Telegram settings still contain REPLACE fields.')
+        TelegramConfig.from_mapping(values, worker=True)
 except (ConfigurationError, CacheError) as exc:
     raise SystemExit(f'Invalid configuration: {exc}') from None
-print('Configuration valid. No connection was made.')
+print(f"Configuration valid (Telegram {'enabled' if enabled else 'disabled'}). No connection was made.")
 PY
 ```
 
 This validation checks the format, not the credentials, and does not prove that the
-IDs belong to you. Confirm that identity before the real test.
+IDs belong to you. Confirm that identity before the real test. While
+`ILIAS_TELEGRAM_ENABLED=false`, it validates only the ILIAS/collector settings; the
+worker checks run once Telegram is enabled, so you can use the same block before this
+step.
 
 You can also simulate the monitor:
 
