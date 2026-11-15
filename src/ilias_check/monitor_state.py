@@ -12,6 +12,7 @@ import sqlite3
 from ilias_check.cache_config import CacheError
 from ilias_check.private_storage import account_key, private_open, private_root, process_lock
 from ilias_check.support_cache import association_id, instant, stamp
+from ilias_check.telegram import material_button_label
 
 
 def encode(value):
@@ -104,7 +105,7 @@ class MonitorState:
         row = self.db.execute("SELECT data FROM snapshot WHERE id=1").fetchone()
         return json.loads(row[0]) if row else None
 
-    def material_buttons(self, activity, now, limit=2):
+    def material_buttons(self, activity, now, limit=2, availability=None):
         """Create durable single-use download buttons for eligible support files."""
         documents = [
             document for document in activity.get("support_documents", [])
@@ -121,7 +122,8 @@ class MonitorState:
                 token = secrets.token_urlsafe(12)
                 self.db.execute("INSERT INTO material_requests VALUES (?,?,?,?)",
                                 (token, association_id(activity), document["document_id"], stamp(now)))
-                label = ("Baixar: " + document.get("title", "material"))[:64]
+                status = (availability or {}).get((association_id(activity), document["document_id"]))
+                label = material_button_label(document, status)
                 buttons.append([{"text": label, "callback_data": "m:" + token}])
         return buttons
 

@@ -274,7 +274,7 @@ body download, or the five-minute source-refresh throttle. Automatic caching and
 automatic document notifications can stay disabled: the click authorizes this copy.
 
 This changes retrieval order, not validity requirements. The existing gate still
-requires a current pending observation at most fifteen minutes old, a selected support
+requires a current pending observation at most twelve hours old, a selected support
 association, a recently validated file, integrity, and unexpired retention/deadline.
 If these checks fail, a bounded source refresh can re-establish eligibility; expired,
 unknown, missing, or submitted evidence never authorizes old bytes by itself.
@@ -284,3 +284,26 @@ before starting it. A dismissed callback spinner alone is insufficient feedback.
 An upload failure gets a safe source-linked response and cannot trigger a second
 collection/download/upload automatically in that request. Validation uses synthetic
 cached PDF bytes and fake Telegram transports, with no real course-document send.
+
+## 14. Material availability, twelve-hour requests, timeout, and source names
+
+Document buttons now distinguish locally available bytes, cached bytes requiring
+revalidation, source retrieval, and an unverified cache. Querying availability uses
+the actual account-scoped manifest and files, without ILIAS requests; display labels
+never bypass the delivery gate.
+
+The original fifteen-minute activity window was too short for explicit requests
+between twelve-hour scheduled checks. Requested cached copies now accept the latest
+current pending observation for up to twelve hours. File validation, integrity,
+selection, deadline, retention, and newer source evidence remain binding. Automatic
+monitor notifications and new source downloads retain their stricter existing rules.
+
+An interactive material request has a total two-minute elapsed-time limit. Timeout
+interrupts synchronous work and unwinds transports, locks and partial transfers,
+without leaving collection in the background or replacing observations with an
+incomplete timed-out result. The user receives an explanation and source link.
+
+Telegram documents preserve the ILIAS response filename when known, or use the
+original material title for older cache entries, sanitized to a bounded basename
+with the validated media type's extension. Internal blob names remain private.
+These changes were checked offline with synthetic files and transports.

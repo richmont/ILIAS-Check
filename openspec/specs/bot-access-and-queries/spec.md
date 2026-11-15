@@ -123,7 +123,7 @@ Transient navigation buttons SHALL be user-bound, single-use, and expire after t
 - **THEN** no activity details or documents are returned through that token
 
 ### Requirement: Serve valid local support before source refresh
-An authorized material click SHALL first try the account-scoped local cache using current stored activity evidence. A valid copy SHALL be sent without collection, authentication, or another body download, even when automatic downloads are disabled. Local delivery SHALL retain the existing gate: current pending observation at most fifteen minutes old, selected support association, integrity, expiry, and configured validation interval.
+An authorized material click SHALL first try the account-scoped local cache using current stored activity evidence. A valid copy SHALL be sent without collection, authentication, or another body download, even when automatic downloads are disabled. Interactive local delivery SHALL require a current pending observation at most twelve hours old, selected support, integrity, expiry, and the configured file-validation interval. Newer contradictory or unknown evidence SHALL block reuse.
 
 #### Scenario: Valid cached worksheet
 - **WHEN** a current pending observation selects an intact, unexpired, recently validated cached worksheet
@@ -138,8 +138,37 @@ A material request SHALL give a chat response before checking the cache and befo
 
 #### Scenario: Slow source check after cache miss
 - **WHEN** a material click requires a full source refresh
-- **THEN** the bot first explains that the check can take several minutes rather than only dismissing the callback loading animation
+- **THEN** the bot first announces the two-minute request limit rather than only dismissing the callback loading animation
 
 #### Scenario: Ambiguous cached upload outcome
 - **WHEN** Telegram cannot confirm acceptance of a locally cached file
 - **THEN** the bot reports the uncertain send and offers the source without fetching or sending another copy automatically
+
+### Requirement: Show live local material availability
+Material buttons and pending details SHALL distinguish “📦 disponível no cache”, “🔄 cache precisa revalidar”, “🌐 obter do ILIAS”, and “❔ cache não verificado”. Availability SHALL inspect the current account-scoped cache locally, using the interactive delivery rules rather than trusting an old inventory flag. A busy or unreadable store SHALL NOT be reported as an available or absent copy. Display labels SHALL NOT bypass delivery-time checks.
+
+#### Scenario: Download after saved observation
+- **WHEN** a manual download populated the cache after the last inventory was saved
+- **THEN** opening the material menu or activity detail shows the current local availability without another ILIAS request
+
+#### Scenario: File exists but observation is stale
+- **WHEN** intact local bytes exist but interactive observation or validation evidence exceeds its allowed age
+- **THEN** the interface shows a revalidation requirement rather than promising immediate local delivery
+
+### Requirement: Bound interactive material work
+An interactive material request SHALL have a two-minute elapsed-time limit covering local lookup, source refresh, retrieval, and upload. Expiration SHALL interrupt synchronous work, release locks, close transports and partial transfers, and return a safe timeout response with source navigation. It SHALL NOT leave an abandoned collector running or store a partial inventory as a completed observation. Ordinary monitor runs SHALL retain their separate limits.
+
+#### Scenario: Slow source traversal
+- **WHEN** a material refresh reaches two minutes before completing
+- **THEN** source work stops, the previous observation remains intact, and the bot reports the timeout with a manual source link
+
+#### Scenario: Lookup hours after scheduled collection
+- **WHEN** the latest current pending observation is six hours old and the local copy passes file-validation, association, expiry, and integrity checks
+- **THEN** an explicit request sends that copy without a source refresh, while automatic monitor delivery retains its stricter freshness checks
+
+### Requirement: Preserve source document filenames
+Telegram document uploads SHALL use the validated ILIAS response filename when known, falling back to the selected document's original title for older cache entries. The multipart name SHALL be a safe bounded basename with the validated type's extension; internal blob names and host paths SHALL NOT be exposed. A generic filename SHALL be used only when no usable source name is available.
+
+#### Scenario: Existing cache with original title
+- **WHEN** an older cache entry has no stored filename but its selected material has an original document title
+- **THEN** Telegram uses that name instead of always naming the file `material.docx`

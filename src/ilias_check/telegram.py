@@ -108,6 +108,20 @@ def safe_link(url):
         return False
 
 
+MATERIAL_AVAILABILITY = {
+    "ready": ("📦", "disponível no cache"),
+    "revalidate": ("🔄", "cache precisa revalidar"),
+    "remote": ("🌐", "obter do ILIAS"),
+    "unknown": ("❔", "cache não verificado"),
+}
+
+
+def material_button_label(document, availability=None):
+    icon = MATERIAL_AVAILABILITY.get(availability, ("", ""))[0]
+    prefix = "Baixar" + (" " + icon if icon else "") + ": "
+    return (prefix + " ".join(document.get("title", "material").split()))[:64]
+
+
 def redact(text, secrets=()):
     for secret in secrets:
         if secret:
@@ -168,7 +182,7 @@ class TelegramClient:
                    f"Validada: {format_time(entry['last_validated_at'], timezone_name)}\nExpira: {format_time(association.get('expires_at'), timezone_name)}\n"
                    f"ILIAS é a fonte oficial e pode estar mais atualizado. Cópias já enviadas não podem ser revogadas.\n{link}")
         return self.call("sendDocument", {"chat_id": self.config.chat_id, "caption": caption[:1024]},
-                         files={"document": ("material" + _extension(entry["media_type"]), source, entry["media_type"])})
+                         files={"document": (document_filename(entry, activity), source, entry["media_type"])})
 
     def set_commands(self, commands):
         return self.call("setMyCommands", {"commands": list(commands)})
@@ -180,12 +194,25 @@ class TelegramClient:
         self.session.close()
 
 
+def document_filename(entry, activity):
+    """Keep the source name, with a safe basename and the validated file extension."""
+    title = next((m.get("title") for m in activity.get("support_documents", [])
+                  if m.get("document_id") == entry.get("document_id")), None)
+    name = str(entry.get("filename") or title or "material")
+    name = name.replace("\\", "/").rsplit("/", 1)[-1]
+    name = " ".join("".join(c for c in name if ord(c) >= 32 and ord(c) != 127).split()).strip(" .")
+    extension = _extension(entry["media_type"])
+    if name.lower().endswith(extension):
+        name = name[:-len(extension)]
+    return (name or "material")[:180 - len(extension)] + extension
+
+
 def _extension(media):
     from ilias_check.support_cache import _TYPES
     return next((s for s, m in _TYPES.items() if m == media), ".bin")
 
 
-def activity_message(activity, checked_at, incomplete=False, stale=False, timezone_name=None):
+def activity_message(activity, checked_at, incomplete=False, stale=False, timezone_name=None, material_availability=None):
     labels = {"pending": "Pendente", "submitted": "Entregue (aprovação não presumida)",
               "closed_without_submission": "Encerrada sem entrega", "excluded": "Fora do filtro de uploads",
               "not_yet_open": "Ainda não aberta", "unknown": "Inconclusivo — precisa verificar"}
@@ -227,7 +254,8 @@ def activity_message(activity, checked_at, incomplete=False, stale=False, timezo
         for document in docs:
             if document.get("role") == "support":
                 association = "contextual; " if document.get("association") == "contextual" else ""
-                state = states.get(document["state"], "estado não confirmado")
+                availability = (material_availability or {}).get((activity["exercise_id"] + ":" + str(activity["assignment_id"]), document.get("document_id")))
+                state = MATERIAL_AVAILABILITY[availability][1] if availability in MATERIAL_AVAILABILITY else states.get(document["state"], "estado não confirmado")
                 materials.append(f"{document['title'][:100]} ({association}{state})")
         lines.append("Materiais de apoio: " + "; ".join(materials)[:500])
     return "\n".join(lines)

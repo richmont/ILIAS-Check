@@ -482,8 +482,12 @@ bevor Sie den Dienst im nächsten Schritt starten.
 
 Dokument-Schaltflächen versuchen zuerst, eine gültige lokale Cache-Kopie zu
 verwenden. Sind Aktivitätsdaten oder Dateiprüfung zu alt, fehlt die Kopie oder ist
-sie ungültig, kündigt der Bot eine möglicherweise mehrere Minuten dauernde
-ILIAS-Prüfung an, bevor er das Material von der Quelle abruft.
+sie ungültig, kündigt der Bot eine erforderliche
+ILIAS-Prüfung an. Eine Materialanfrage ist auf insgesamt zwei Minuten begrenzt.
+Für angeforderte Cache-Kopien darf die aktuelle Beobachtung einer offenen Aufgabe
+höchstens zwölf Stunden alt sein; Dateiprüfung und Ablauf bleiben verbindlich.
+Die Schaltflächen zeigen die Verfügbarkeit und einen Prüfbedarf an. Gesendete
+Dateien behalten ihren ursprünglichen Namen.
 
 ## 10. Worker mit systemd auf Benutzerebene betreiben
 

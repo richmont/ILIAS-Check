@@ -190,8 +190,10 @@ and ambiguous network outcomes can produce duplicates. Due text alerts are group
 into one message with the pending count and original titles. `/pendentes` opens a
 compact five-item page with navigation buttons, numbered detail buttons, and an
 explicit “Exibir todas” option. Details retain source and selected-material download
-buttons. No cron job or service is
-installed automatically.
+buttons. Material buttons indicate current cache availability. Explicit cache requests
+accept current pending evidence for up to twelve hours, and each interactive material
+request has a two-minute timeout. Files retain their source filenames. No cron job
+or service is installed automatically.
 
 The implementation has been tested offline with fake Telegram transports. Real
 Telegram delivery, course-document transmission and worker/cron activation have
@@ -202,7 +204,7 @@ Follow the [Telegram operations guide](docs/telegram.md) and
 ## Development status and verification
 
 The collector, assignment classifier, support cache, scheduled monitor and private
-bot are implemented. The reviewed offline suite contains **449 passing tests**:
+bot are implemented. The reviewed offline suite contains **467 passing tests**:
 
 ```sh
 .venv/bin/pytest -q

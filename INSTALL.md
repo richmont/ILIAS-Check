@@ -470,7 +470,10 @@ starting the service in the next step.
 
 Document buttons try the valid local cache first. If current activity evidence or
 file validation is too old, or the copy is missing or invalid, the bot announces an
-ILIAS check that can take several minutes before trying source retrieval.
+ILIAS check before trying source retrieval. Explicit cached requests accept a current
+pending observation up to twelve hours old, subject to file validation and expiry.
+Buttons distinguish cache availability and revalidation. Material requests stop
+after two minutes and report a timeout; uploaded documents retain their source names.
 
 ## 10. Keep the worker running with user-level systemd
 

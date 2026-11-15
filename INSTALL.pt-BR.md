@@ -469,7 +469,10 @@ de iniciar o serviço da próxima etapa.
 Os botões de documento tentam primeiro a cópia válida no cache local. Se a
 observação da atividade ou a validação do arquivo estiver antiga, ou a cópia
 estiver ausente ou inválida, o bot avisa que fará uma verificação no ILIAS que
-pode levar vários minutos antes de tentar obter o material na fonte.
+tem limite total de dois minutos para a solicitação. O envio solicitado do cache
+aceita observação pendente atual com até doze horas, respeitando validação e
+expiração do arquivo. Os botões distinguem a disponibilidade e a necessidade de
+revalidação. O arquivo enviado mantém o nome de origem.
 
 ## 10. Mantenha o worker ativo com systemd de usuário
 

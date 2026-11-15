@@ -24,6 +24,7 @@ from ilias_check.private_storage import account_key, private_open, private_root,
 _BLOB = re.compile(r"[0-9a-f]{64}-[0-9a-f]{64}-[0-9a-f]{32}\.blob\Z")
 _PART = re.compile(r"transfer-[0-9a-f]{32}\.part\Z")
 _MAX_ENTRIES = 1000
+INTERACTIVE_ACTIVITY_MAX_AGE = timedelta(hours=12)
 _TYPES = {
     ".pdf": "application/pdf", ".doc": "application/msword",
     ".xls": "application/vnd.ms-excel", ".ppt": "application/vnd.ms-powerpoint",
@@ -363,6 +364,7 @@ class SupportCache:
                 self._unlink(previous["file"])
             now = stamp(self.clock())
             return {"document_id": material["document_id"], "source_url": material["source_url"],
+                    "filename": _document_label(material, response),
                     "file": filename, "media_type": media, "byte_size": size,
                     "sha256": digest.hexdigest(), "etag": _validator(response.headers.get("ETag")),
                     "last_modified": _validator(response.headers.get("Last-Modified")),
@@ -373,14 +375,7 @@ class SupportCache:
             self._unlink(temporary)
 
     def _type(self, name, material, response):
-        label = material["title"]
-        disposition = response.headers.get("Content-Disposition", "")
-        found = re.search(r'filename\*?=(?:UTF-8\'\')?"?([^";]+)', disposition, re.I)
-        if found:
-            from urllib.parse import unquote
-            label = unquote(found[1]).strip()
-            if "/" in label or "\\" in label or any(ord(c) < 32 for c in label) or label in {".", ".."}:
-                raise CacheError("unsafe_document_filename")
+        label = _document_label(material, response)
         suffix = Path(label).suffix.lower()
         media = response.headers.get("Content-Type", "").split(";", 1)[0].lower().strip()
         if suffix not in _TYPES:
@@ -427,26 +422,68 @@ class SupportCache:
                              "expires_at": association.get("expires_at"), "expiry_reason": association.get("expiry_reason"),
                              "eligible": eligible, "warning": "Cópia local; o ILIAS é a fonte oficial e pode estar mais atualizado."}
 
+    def _delivery_entry(self, document_id, activity, checked_at, activity_max_age=timedelta(minutes=15)):
+        """Validate a copy while the caller holds the cache lease."""
+        now = self.clock()
+        checked = instant(checked_at)
+        entry = self.entries.get(self._key(document_id))
+        aid = association_id(activity)
+        if not entry or entry["state"] not in {"cached", "unchanged"} or now - instant(entry["last_validated_at"]) >= timedelta(hours=self.policy.revalidate_hours) or activity["status"] != "pending" or checked > now + timedelta(seconds=60) or now - checked > activity_max_age:
+            raise CacheError("Support delivery requires a fresh pending activity check.")
+        if not any(m.get("document_id") == document_id and m.get("selected_for_support") and m.get("role") == "support" for m in activity.get("support_documents", [])):
+            raise CacheError("Current activity does not select this support document.")
+        association = entry["associations"].get(aid)
+        current = self._association(activity, instant(entry["downloaded_at"]), checked)
+        if not association or not association["current"] or not current["current"] or min(instant(current["expires_at"]), instant(association["expires_at"])) <= now or not self._valid(entry):
+            raise CacheError("Support copy is expired, unavailable, or corrupted.")
+        return entry
+
+    def availability(self, references, activity_max_age=INTERACTIVE_ACTIVITY_MAX_AGE):
+        """Inspect current local copies in one lease, without fetching source bodies.
+
+        References contain (activity, document ID, checked timestamp, current flag).
+        Labels are advisory: delivery always runs the same checks again.
+        """
+        result = {(association_id(activity), document_id): "remote"
+                  for activity, document_id, _, _ in references}
+        if not self.policy.directory.expanduser().exists():
+            return result
+        with self.locked():
+            self.maintenance()
+            for activity, document_id, checked, current in references:
+                key = (association_id(activity), document_id)
+                try:
+                    if not current:
+                        raise CacheError("Activity observation is not current.")
+                    self._delivery_entry(document_id, activity, checked, activity_max_age)
+                    result[key] = "ready"
+                except CacheError:
+                    entry = self.entries.get(self._key(document_id))
+                    if entry and entry.get("file") and self._valid(entry):
+                        result[key] = "revalidate"
+        return result
+
     @contextmanager
-    def delivery(self, document_id, activity, checked_at):
+    def delivery(self, document_id, activity, checked_at, *, activity_max_age=timedelta(minutes=15)):
         """Hold the global lease throughout the read/send; never trust exported paths or file IDs."""
         with self.locked():
-            now = self.clock()
-            checked = instant(checked_at)
             self.maintenance()
-            entry = self.entries.get(self._key(document_id))
-            aid = association_id(activity)
-            if not entry or entry["state"] not in {"cached", "unchanged"} or now - instant(entry["last_validated_at"]) >= timedelta(hours=self.policy.revalidate_hours) or activity["status"] != "pending" or checked > now + timedelta(seconds=60) or now - checked > timedelta(minutes=15):
-                raise CacheError("Support delivery requires a fresh pending activity check.")
-            if not any(m.get("document_id") == document_id and m.get("selected_for_support") and m.get("role") == "support" for m in activity.get("support_documents", [])):
-                raise CacheError("Current activity does not select this support document.")
-            association = entry["associations"].get(aid)
-            current = self._association(activity, instant(entry["downloaded_at"]), checked)
-            if not association or not association["current"] or not current["current"] or min(instant(current["expires_at"]), instant(association["expires_at"])) <= now or not self._valid(entry):
-                raise CacheError("Support copy is expired, unavailable, or corrupted.")
+            entry = self._delivery_entry(document_id, activity, checked_at, activity_max_age)
             fd = private_open(self.fd, entry["file"], os.O_RDONLY)
             with os.fdopen(fd, "rb") as source:
                 yield source, deepcopy(entry)
+
+
+def _document_label(material, response):
+    label = material["title"]
+    disposition = response.headers.get("Content-Disposition", "")
+    found = re.search(r'filename\*?=(?:UTF-8\'\')?"?([^";]+)', disposition, re.I)
+    if found:
+        from urllib.parse import unquote
+        label = unquote(found[1]).strip()
+        if "/" in label or "\\" in label or any(ord(c) < 32 for c in label) or label in {".", ".."}:
+            raise CacheError("unsafe_document_filename")
+    return label
 
 
 def _validator(value):

@@ -1060,7 +1060,7 @@ def test_cache_miss_announces_source_check_before_blocking_collection(config, te
         {'document_id': 'file:9', 'title': 'Blatt.pdf', 'selected_for_support': True, 'role': 'support', 'state': 'metadata_only'}]
     client = Client(); calls = []
     def collector(c):
-        assert 'pode levar alguns minutos' in client.messages[-1][0]
+        assert 'limite desta solicitação é de dois minutos' in client.messages[-1][0]
         assert not c.cache_policy.enabled
         calls.append(c)
         return deepcopy(data)
@@ -1077,10 +1077,15 @@ def test_cache_miss_announces_source_check_before_blocking_collection(config, te
 def test_invalid_cached_copy_is_not_served_before_source_refresh(config, telegram, cached_material, ineligible):
     data, body = cached_material
     now = NOW
-    if ineligible == 'stale': now += timedelta(minutes=16)
+    if ineligible == 'stale': now += timedelta(hours=12, seconds=1)
     if ineligible == 'expired': now += timedelta(hours=169)
     if ineligible == 'unvalidated': now += timedelta(hours=13)
     if ineligible in {'expired', 'unvalidated'}: data['checked_at'] = stamp(now)
+    if ineligible == 'stale':
+        manifest_path = config.cache_policy.directory / 'manifest.json'
+        manifest = json.loads(manifest_path.read_text())
+        for entry in manifest['entries'].values(): entry['last_validated_at'] = stamp(now)
+        manifest_path.write_text(json.dumps(manifest))
     if ineligible == 'corrupt':
         cache_path = Path(data['activities'][0]['support_documents'][0]['cache']['path'])
         cache_path.write_bytes(b'corrupted cached bytes')
@@ -1123,3 +1128,96 @@ def test_cached_upload_failure_does_not_trigger_collection_or_second_send(config
         assert 'confirmar o envio pelo Telegram' in client.messages[-1][0]
         assert client.messages[-1][1][0][0]['text'] == 'Abrir no ILIAS'
         assert not state.cursor('support_check_at')
+
+
+@pytest.mark.parametrize('menu', ['/materiais', '/pendentes'])
+@pytest.mark.parametrize('copy_state,icon', [('ready', '📦'), ('revalidate', '🔄'), ('remote', '🌐'), ('locked', '❔')])
+def test_interface_identifies_live_local_document_availability(config, telegram, cached_material, menu, copy_state, icon):
+    from contextlib import nullcontext
+    from ilias_check.support_cache import SupportCache
+    data, _ = cached_material
+    # Simulate a saved observation which predates a manual cache download.
+    material = data['activities'][0]['support_documents'][0]
+    material['state'] = 'metadata_only'; material.pop('cache')
+    now = NOW + (timedelta(hours=13) if copy_state == 'revalidate' else timedelta(hours=1))
+    if copy_state == 'remote':
+        for path in config.cache_policy.directory.glob('*.blob'): path.unlink()
+    def unexpected(*args): pytest.fail('Opening the interface must not access ILIAS')
+    with MonitorState(config, telegram.state_dir).open() as state:
+        state.observe(data, NOW)
+        client = Client(); bot = Bot(config, telegram, state, client, lambda: now, unexpected, unexpected)
+        lease = SupportCache(config, lambda: now).locked() if copy_state == 'locked' else nullcontext()
+        with lease:
+            bot.handle(update(menu))
+            if menu == '/pendentes':
+                bot.handle(update(uid=2, callback=client.messages[-1][1][-1][0]['callback_data']))
+        labels = [button['text'] for row in client.messages[-1][1] for button in row if button['text'].startswith('Baixar')]
+        assert len(labels) == 1 and labels[0].startswith(f'Baixar {icon}: worksheet.pdf')
+        assert not client.documents
+        if menu == '/pendentes' and copy_state == 'ready':
+            assert 'worksheet.pdf (disponível no cache)' in client.messages[-1][0]
+            assert 'somente referência' not in client.messages[-1][0]
+
+
+def test_cached_document_can_be_sent_hours_after_monitor_without_refresh(config, telegram, cached_material):
+    data, _ = cached_material
+    now = NOW + timedelta(hours=6)
+    def unexpected(*args): pytest.fail('A six-hour-old current observation can authorize valid cache')
+    with MonitorState(config, telegram.state_dir).open() as state:
+        state.observe(data, NOW)
+        client = Client(); bot = Bot(config, telegram, state, client, lambda: now, unexpected, unexpected)
+        bot.handle(update('/materiais'))
+        bot.handle(update(uid=2, callback=client.messages[-1][1][0][0]['callback_data']))
+        assert len(client.documents) == 1
+
+
+def test_interactive_timeout_stops_scan_and_restores_worker_timer(config, telegram, monkeypatch):
+    import signal
+    import threading
+    from ilias_check import bot as bot_module
+    from ilias_check.timeouts import material_request_deadline
+    data = inventory()
+    data['activities'][0]['support_documents'] = [
+        {'document_id': 'file:9', 'title': 'Blatt.pdf', 'selected_for_support': True, 'role': 'support', 'state': 'metadata_only'}]
+    old_handler = signal.getsignal(signal.SIGALRM)
+    monkeypatch.setattr(bot_module, 'material_request_deadline', lambda: material_request_deadline(0.02))
+    def slow_collector(c):
+        try:
+            threading.Event().wait(1)
+        except Exception:
+            pytest.fail('The deadline must escape ordinary per-page exception recovery')
+        pytest.fail('Timed-out collection must not keep running')
+    with MonitorState(config, telegram.state_dir).open() as state:
+        state.observe(data, NOW)
+        before = state.snapshot()
+        client = Client(); bot = Bot(config, telegram, state, client, lambda: NOW, slow_collector)
+        bot.handle(update('/materiais'))
+        bot.handle(update(uid=2, callback=client.messages[-1][1][0][0]['callback_data']))
+        assert 'limite de dois minutos' in client.messages[-1][0]
+        assert client.messages[-1][1][0][0]['text'] == 'Abrir no ILIAS'
+        assert not client.documents and state.snapshot() == before
+        assert signal.getitimer(signal.ITIMER_REAL)[0] == 0
+        assert signal.getsignal(signal.SIGALRM) == old_handler
+        with state.run_lock(): pass  # Timeout released the run lease.
+        bot.handle(update('/ajuda', uid=3))
+        assert client.messages[-1][0].startswith('/pendentes —')
+
+
+@pytest.mark.parametrize('entry_name,title,expected', [
+    ('Arbeitsblatt Übung.docx', 'Different.docx', 'Arbeitsblatt Übung.docx'),
+    (None, 'Original Übung.docx', 'Original Übung.docx'),
+    ('../../worksheet\r\n.docx', None, 'worksheet.docx'),
+    ('C:\\private\\worksheet.docx', None, 'worksheet.docx'),
+    (None, None, 'material.docx'),
+])
+def test_document_upload_uses_safe_original_filename(telegram, entry_name, title, expected):
+    class RecordingClient(TelegramClient):
+        def call(self, method, payload, files=None): return files
+    activity = inventory()['activities'][0]
+    if title:
+        activity['support_documents'] = [{'document_id': 'file:9', 'title': title}]
+    entry = {'document_id': 'file:9', 'filename': entry_name, 'byte_size': 10,
+             'media_type': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+             'downloaded_at': stamp(NOW), 'last_validated_at': stamp(NOW), 'associations': {}}
+    files = RecordingClient(telegram).document(None, entry, activity, stamp(NOW))
+    assert files['document'][0] == expected

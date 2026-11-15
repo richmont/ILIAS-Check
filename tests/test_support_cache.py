@@ -441,3 +441,36 @@ def test_account_identity_normalizes_installation_origin(config):
     from ilias_check.private_storage import account_key
     assert account_key(config) == account_key(replace(config, base_url="https://ILIAS.EXAMPLE:443/ilias/"))
     assert account_key(config) != account_key(replace(config, client_id="another"))
+
+
+def test_cached_source_filename_is_preserved(config):
+    response = Response(headers={'Content-Type': 'application/pdf',
+                                 'Content-Disposition': "attachment; filename*=UTF-8''Original%20%C3%9Cbung.pdf"})
+    collect(config, source=Source(response))
+    manifest = json.loads((config.cache_policy.directory / 'manifest.json').read_text())
+    assert next(iter(manifest['entries'].values()))['filename'] == 'Original Übung.pdf'
+
+
+def test_automatic_delivery_keeps_short_freshness_limit(config):
+    collect(config)
+    later = NOW + timedelta(hours=1)
+    with pytest.raises(CacheError):
+        with SupportCache(config, lambda: later).delivery('file:1', snapshot()['activities'][0], stamp(NOW)):
+            pytest.fail('Automatic delivery must not inherit the interactive twelve-hour window')
+
+
+def test_interrupted_download_closes_response_and_removes_partial_bytes(config):
+    import threading
+    from ilias_check.timeouts import MaterialRequestTimeout, material_request_deadline
+    class SlowResponse(Response):
+        def iter_content(self, chunk_size=65536):
+            yield self.body[:10]
+            threading.Event().wait(1)
+            yield self.body[10:]
+    response = SlowResponse()
+    with pytest.raises(MaterialRequestTimeout):
+        with material_request_deadline(0.02):
+            collect(config, source=Source(response))
+    assert response.closed and not list(config.cache_policy.directory.glob('*.part'))
+    # Cancellation does not strand a cache lease.
+    with SupportCache(config, lambda: NOW).locked(): pass

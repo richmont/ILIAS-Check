@@ -16,12 +16,15 @@ from ilias_check.collector import collect_inventory
 from ilias_check.monitor import effective_config, maintain
 from ilias_check.monitor_state import MonitorState
 from ilias_check.private_storage import process_lock
-from ilias_check.support_cache import SupportCache, association_id, cache_inventory, instant, stamp
+from ilias_check.support_cache import (
+    INTERACTIVE_ACTIVITY_MAX_AGE, SupportCache, association_id, cache_inventory, instant, stamp,
+)
 from ilias_check.telegram import (
     TelegramClient, TelegramError, activity_message, format_time, redact, safe_link,
-    source_buttons,
+    source_buttons, material_button_label, MATERIAL_AVAILABILITY,
 )
 from ilias_check.transport import SafeTransport
+from ilias_check.timeouts import MaterialRequestTimeout, material_request_deadline
 
 _ISSUES = "https://github.com/richmont/ILIAS-Check/issues/new"
 _HELP = ("/pendentes — uploads pendentes\n/entregues — histórico de entregas\n/encerradas — encerradas sem entrega\n"
@@ -292,17 +295,39 @@ class Bot:
         old = " (observação antiga)" if stale or self.clock() - instant(checked) > timedelta(hours=12) else ""
         return " ".join(activity["title"].split())[:120] + hint + old
 
+    def _material_availability(self, references):
+        try:
+            config = effective_config(self.config, self.state)
+            return SupportCache(config, self.clock).availability(references)
+        except Exception:
+            # A locked or unreadable store must not become a claim that bytes
+            # are available, or that the document has never been downloaded.
+            return {(association_id(activity), document_id): "unknown"
+                    for activity, document_id, _, _ in references}
+
+    @staticmethod
+    def _material_legend():
+        return " · ".join(icon + " " + label for icon, label in MATERIAL_AVAILABILITY.values())
+
     def _send_detail(self, activity, checked, stale):
         snapshot = self.state.snapshot() or {}
         stale = stale or self.clock() - instant(checked) > timedelta(hours=12)
         buttons = source_buttons(activity)
+        references = [(activity, m["document_id"], checked, not stale)
+                      for m in activity.get("support_documents", [])
+                      if m.get("document_id") and m.get("selected_for_support") and m.get("role") == "support"][:2]
+        availability = self._material_availability(references) if references and activity["status"] == "pending" else {}
         if activity["status"] == "pending":
-            buttons += self.state.material_buttons(activity, self.clock())
-        text = activity_message(activity, checked, self._incomplete(snapshot), stale, self._timezone())
+            buttons += self.state.material_buttons(activity, self.clock(), availability=availability)
+        # The inventory may predate a manual download. Render local status from
+        # the current manifest rather than its old metadata-only cache flag.
+        text = activity_message(activity, checked, self._incomplete(snapshot), stale, self._timezone(), availability)
         if any("callback_data" in button for row in buttons for button in row):
             disclosure = "Baixar autoriza o envio dessa cópia pelo Telegram. O bot tenta o cache válido primeiro e verifica o ILIAS se necessário."
             available = max(0, self.telegram.max_message_chars - len(disclosure) - 2)
-            text = text[:available] + "\n\n" + disclosure
+            legend = self._material_legend()
+            available = max(0, available - len(legend) - 1)
+            text = text[:available] + "\n\n" + legend + "\n" + disclosure
         self.client.message(text, buttons)
 
     def _all(self, status, uid):
@@ -364,15 +389,18 @@ class Bot:
         self.client.message(text)
 
     def _materials(self, page, uid):
-        candidates = [(activity, material) for activity, _, stale in self._observations("pending") if not stale
+        candidates = [(activity, material, checked) for activity, checked, stale in self._observations("pending") if not stale
                       for material in activity.get("support_documents", [])
                       if material.get("selected_for_support") and material.get("role") == "support"]
         page_count = max(1, (len(candidates) + 9) // 10)
         page = min(max(page, 1), page_count)
         buttons = []
-        for activity, material in candidates[(page - 1) * 10:page * 10]:
+        shown = candidates[(page - 1) * 10:page * 10]
+        availability = self._material_availability([
+            (activity, material["document_id"], checked, True) for activity, material, checked in shown]) if shown else {}
+        for activity, material, checked in shown:
             token = self._token("download", (association_id(activity), material["document_id"]), uid)
-            buttons.append([{"text": ("Baixar pelo Telegram: " + material["title"])[:64], "callback_data": token}])
+            buttons.append([{"text": material_button_label(material, availability.get((association_id(activity), material["document_id"]))), "callback_data": token}])
         if page_count > 1:
             nav = []
             if page > 1:
@@ -384,7 +412,7 @@ class Bot:
             buttons.append(nav)
         self.client.message("Ao tocar em um material, você autoriza enviar essa cópia pelo Telegram. Isso não ativa anexos automáticos futuros. "
                             "O bot tenta o cache válido primeiro e verifica o ILIAS se necessário; a fonte pode estar mais atualizada. Cópias já enviadas não podem ser revogadas. "
-                            f"Página {page}/{page_count}." if buttons else
+                            + self._material_legend() + f" Página {page}/{page_count}." if buttons else
                             "Nenhum apoio confirmado disponível. Confira a atividade no ILIAS ou /verificar.", buttons)
 
 
@@ -422,7 +450,7 @@ class Bot:
         aid, document_id = payload
         activity = None
         try:
-            with self.state.run_lock():
+            with self.state.run_lock(), material_request_deadline():
                 config = effective_config(self.config, self.state)
                 previous = self.state.db.execute("SELECT * FROM observations WHERE id=?", (aid,)).fetchone()
                 activity = json.loads(previous["activity"]) if previous else None
@@ -439,7 +467,7 @@ class Bot:
                     return
                 self.last_check = now
                 self.state.set_cursor("support_check_at", int(now.timestamp()))
-                self.client.message("Não há cópia local pronta para envio. Vou verificar a atividade e o material no ILIAS; isso pode levar alguns minutos.")
+                self.client.message("Não há cópia local pronta para envio. Vou verificar a atividade e o material no ILIAS; o limite desta solicitação é de dois minutos.")
                 # The scan observes metadata only; consent covers only the selected material.
                 inventory = self.collector(replace(config, cache_policy=replace(config.cache_policy, enabled=False)))
                 self.state.observe(inventory, self.clock(), self.telegram.reminder_hours, self.telegram.send_documents)
@@ -449,6 +477,8 @@ class Bot:
                     raise CacheError("Eligibility not confirmed.")
                 activity = refreshed
                 self.retrieve(config, inventory, activity, material)
+        except MaterialRequestTimeout:
+            self.client.message("A solicitação atingiu o limite de dois minutos e foi interrompida. Nenhum envio foi confirmado. Consulte o material no ILIAS ou abra o menu novamente após atualizar o monitor.", source_buttons(activity) if activity else [])
         except TelegramError as exc:
             text = ("O arquivo excede o limite de envio pelo Telegram." if str(exc) == "telegram_document_too_large" else
                     "Não foi possível confirmar o envio pelo Telegram. Abra o material novamente para tentar; o ILIAS continua sendo a fonte oficial.")
@@ -464,7 +494,8 @@ class Bot:
         with ExitStack() as stack:
             try:
                 source, entry = stack.enter_context(
-                    SupportCache(config, self.clock).delivery(document_id, activity, checked_at))
+                    SupportCache(config, self.clock).delivery(
+                        document_id, activity, checked_at, activity_max_age=INTERACTIVE_ACTIVITY_MAX_AGE))
             except (CacheError, OSError, ValueError):
                 return False
             self.client.document(source, entry, activity, checked_at, self._timezone())

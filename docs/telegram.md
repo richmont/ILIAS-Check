@@ -190,17 +190,34 @@ A material request responds in the chat immediately, then tries the local cache
 using the latest stored observation. A valid local hit sends the selected bytes
 without login, collection, or another download, including when automatic caching
 is disabled. It does not consume or wait for the five-minute source-refresh throttle.
-The existing delivery gate still requires a current pending observation no more than
-fifteen minutes old, selected support, intact bytes, unexpired association, and file
+The interactive delivery gate requires a current pending observation no more than
+twelve hours old, selected support, intact bytes, unexpired association, and file
 validation within `ILIAS_SUPPORT_REVALIDATE_HOURS` (default twelve hours).
 
-When that gate cannot admit a local copy, the bot announces the potentially slow
-bounded ILIAS check before collection. Only the selected support is fetched;
+Material buttons show their current local state: 📦 available from cache, 🔄 cached
+but requiring revalidation, 🌐 obtain from ILIAS, or ❔ local cache not verified.
+The labels inspect the current private manifest and bytes without ILIAS requests;
+a locked store stays unverified. Old metadata-only flags do not hide a later manual
+download. Delivery checks are repeated at click time.
+
+When that gate cannot admit a local copy, the bot announces the bounded ILIAS check
+before collection. The entire interactive request has a **120-second elapsed-time
+limit**, covering local lookup, traversal, retrieval and upload. Timeout interrupts
+work in the synchronous Linux worker, releases leases, closes transports, removes
+partial transfers and reports a safe source-linked response. No detached collection
+continues, and incomplete timed-out results do not replace the previous snapshot.
+The scheduled monitor keeps its own request/time budgets and fifteen-minute alert
+freshness rule; the twelve-hour observation window applies to requested cached
+copies. Only the selected support is fetched;
 submitted/unknown/ended work, answers and model solutions are refused. A Telegram
 upload failure is reported with source navigation and never triggers an automatic
-second download or upload in that request. The final delivery gate rechecks current association, retention and checksum
+second download or upload in that request. The final delivery gate rechecks current
+association, retention and checksum
 under a reader lock. Captions give copy/validation/expiry times and the original
-activity source. ILIAS may be newer; already delivered copies cannot be revoked.
+activity source. Upload filenames preserve the ILIAS response filename, or the
+selected original title for older cached entries, with a safe basename and validated
+extension. The internal `.blob` name is never sent. ILIAS may be newer; already
+delivered copies cannot be revoked.
 An ongoing accepted transfer may finish after local expiry; a new transfer may not start.
 
 Reports concern this software, not messages to teachers. Only text is accepted, with
